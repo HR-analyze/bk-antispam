@@ -6,7 +6,7 @@ import time
 from collections import defaultdict, deque
 
 from aiogram import Bot, Dispatcher, Router
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
 from dotenv import load_dotenv
 
@@ -16,12 +16,19 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 CHAT_ID_RAW = os.getenv("CHAT_ID", "").strip()
-CHAT_ID = int(CHAT_ID_RAW) if CHAT_ID_RAW else None
+
+try:
+    CHAT_ID = int(CHAT_ID_RAW) if CHAT_ID_RAW else None
+except ValueError as exc:
+    raise RuntimeError("CHAT_ID must be an integer, for example -1001234567890") from exc
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+)
 
 router = Router()
 
@@ -94,11 +101,19 @@ def in_target_chat(message: Message) -> bool:
     return CHAT_ID is None or message.chat.id == CHAT_ID
 
 
+@router.message(CommandStart())
+async def start_command(message: Message) -> None:
+    await message.answer("✅ BK AntiSpam работает.")
+
+
 @router.message(Command("chat_id"))
 async def chat_id_command(message: Message) -> None:
-    # Deliberately returns the current chat ID. Do not enable moderation in a chat
-    # until CHAT_ID is configured in RelaxDev.
     await message.answer(f"CHAT_ID: {message.chat.id}")
+
+
+@router.message(Command("ping"))
+async def ping_command(message: Message) -> None:
+    await message.answer("🏓 pong")
 
 
 @router.message()
@@ -120,7 +135,10 @@ async def moderate(message: Message, bot: Bot) -> None:
         return
 
     try:
-        await bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)
+        await bot.delete_message(
+            chat_id=message.chat.id,
+            message_id=message.message_id,
+        )
         logging.info(
             "Deleted chat=%s message=%s reason=%s user=%s",
             message.chat.id,
@@ -144,7 +162,10 @@ async def main() -> None:
 
     me = await bot.get_me()
     logging.info("Bot started: @%s (%s) CHAT_ID=%s", me.username, me.id, CHAT_ID)
-    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    await dp.start_polling(
+        bot,
+        allowed_updates=dp.resolve_used_update_types(),
+    )
 
 
 if __name__ == "__main__":
