@@ -28,8 +28,8 @@ NEGATIVE_PHRASES = {
     "child porn", "child pornography", "sexual content involving minors",
 }
 
-# Recruitment / job-offer spam. These are deliberately phrase-based so that
-# ordinary work discussion is not removed just because it contains "работа".
+# Recruitment / job-offer spam. Phrase based to avoid deleting ordinary
+# discussion of work.
 JOB_PHRASES = {
     "подработка", "подработку", "подработке", "подработки", "подработать",
     "шабашка", "шабашку", "шабашке", "шабашки", "хорошая подработка",
@@ -37,7 +37,12 @@ JOB_PHRASES = {
     "оплачиваемая подработка", "оплачиваемую подработку",
     "ищу кандидатов", "ищем кандидатов", "нужны кандидаты", "ищу сотрудников",
     "нужны сотрудники", "требуются сотрудники", "требуются люди", "нужны люди",
-    "нужны мужчины", "нужны женщины", "мужчины и женщины", "парни и девушки",
+    "нужны мужчины", "нужны мужчина", "нужны женщины", "нужны женщина",
+    "мужчины и женщины", "мужчины или женщины", "мужчины женщины",
+    "парни и девушки", "парни или девушки", "парни девушки",
+    "нужны парни", "нужны девушки", "нужен парень", "нужна девушка",
+    "мужчины на работу", "женщины на работу", "мужчина на работу", "женщина на работу",
+    "ребята на работу", "ребята для работы", "молодые люди на работу",
     "открыла магазин", "открыл магазин", "открыли магазин", "открываем магазин",
     "открыла точку", "открыл точку", "открыли точку", "новая схема", "новой схемы",
     "есть варианты", "есть вариант", "варианты работы", "вариант работы",
@@ -54,8 +59,8 @@ JOB_PHRASES = {
 JOB_SIGNALS = (
     "подработ", "шабаш", "кандидат", "сотрудник", "ваканс", "предоплат",
     "оплата", "выплата", "заработ", "схем", "магазин", "точк", "пару часов",
-    "несколько часов", "мужчин", "женщин", "парни", "девушки", "пишите",
-    "в личку", "в лс",
+    "несколько часов", "мужчин", "женщин", "парни", "девушки", "парень", "девушка",
+    "ребят", "пишите", "в личку", "в лс",
 )
 
 OBFUSCATED_JOB_PATTERNS = (
@@ -107,13 +112,10 @@ def classify(text: str):
     if _matches_any(normalized, SPAM_PATTERNS):
         return "spam"
 
-    # Explicit phrase dictionary catches typical recruiting advertisements.
     for phrase in JOB_PHRASES:
         if normalize_spaced(phrase) in spaced:
             return "job_spam"
 
-    # Combine independent job signals to catch new phrasings without making
-    # the single word "работа" a spam trigger.
     job_signal_count = sum(1 for signal in JOB_SIGNALS if normalize_text(signal) in normalized)
     if job_signal_count >= 2:
         return "job_spam"
