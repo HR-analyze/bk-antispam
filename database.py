@@ -2,14 +2,15 @@ import logging
 import os
 
 import psycopg
-from psycopg.rows import dict_row
 
 logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
 CREATE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS messages (
+CREATE SCHEMA IF NOT EXISTS public;
+
+CREATE TABLE IF NOT EXISTS public.messages (
     id BIGSERIAL PRIMARY KEY,
     chat_id BIGINT NOT NULL,
     message_id BIGINT NOT NULL,
@@ -28,11 +29,11 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_chat_date
-    ON messages (chat_id, message_date DESC);
+    ON public.messages (chat_id, message_date DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_user_date
-    ON messages (user_id, message_date DESC);
+    ON public.messages (user_id, message_date DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_classification
-    ON messages (classification);
+    ON public.messages (classification);
 """
 
 
@@ -45,7 +46,13 @@ async def init_db() -> None:
         async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
             await conn.execute(CREATE_TABLE_SQL)
             await conn.commit()
-        logger.info("PostgreSQL initialized")
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT to_regclass('public.messages')")
+                row = await cur.fetchone()
+            if row and row[0] == "messages":
+                logger.info("PostgreSQL initialized: public.messages exists")
+            else:
+                logger.error("PostgreSQL connected, but public.messages was not created")
     except Exception:
         logger.exception("PostgreSQL initialization failed")
 
@@ -58,7 +65,7 @@ async def save_message(message, text: str) -> bool:
     reply = message.reply_to_message
 
     sql = """
-    INSERT INTO messages (
+    INSERT INTO public.messages (
         chat_id, message_id, user_id, username, first_name, last_name,
         text, message_date, reply_to_message_id
     ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -66,26 +73,22 @@ async def save_message(message, text: str) -> bool:
         text = EXCLUDED.text,
         username = EXCLUDED.username,
         first_name = EXCLUDED.first_name,
-        last_name = EXCLUDED.last_name,
-        classification = COALESCE(messages.classification, EXCLUDED.classification)
+        last_name = EXCLUDED.last_name
     """
 
     try:
         async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
-            await conn.execute(
-                sql,
-                (
-                    message.chat.id,
-                    message.message_id,
-                    user.id if user else None,
-                    user.username if user else None,
-                    user.first_name if user else None,
-                    user.last_name if user else None,
-                    text or "",
-                    message.date,
-                    reply.message_id if reply else None,
-                ),
-            )
+            await conn.execute(sql, (
+                message.chat.id,
+                message.message_id,
+                user.id if user else None,
+                user.username if user else None,
+                user.first_name if user else None,
+                user.last_name if user else None,
+                text or "",
+                message.date,
+                reply.message_id if reply else None,
+            ))
             await conn.commit()
         return True
     except Exception:
@@ -101,7 +104,7 @@ async def mark_moderation(message, classification: str | None, deleted: bool, re
         async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
             await conn.execute(
                 """
-                UPDATE messages
+                UPDATE public.messages
                 SET classification = %s, deleted = %s, delete_reason = %s
                 WHERE chat_id = %s AND message_id = %s
                 """,
