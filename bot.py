@@ -35,6 +35,7 @@ router = Router()
 REASONS = {
     "link": "ссылка",
     "profanity": "мат",
+    "negative": "негатив",
     "spam": "спам/реклама",
     "flood": "флуд/повтор",
 }
@@ -42,6 +43,10 @@ REASONS = {
 WINDOW_SECONDS = 60
 MAX_TIMESTAMPS_PER_USER = 20
 MAX_RECENT_MESSAGES_PER_USER = 5
+# Six different test messages in a minute must not be treated as flood.
+# Flood is primarily intended for repeated messages; a higher threshold
+# prevents normal rapid conversations and moderation testing from being deleted.
+FLOOD_MESSAGE_LIMIT = 15
 
 user_timestamps: dict[tuple[int, int], deque[float]] = defaultdict(deque)
 user_recent_hashes: dict[tuple[int, int], deque[tuple[float, str]]] = defaultdict(deque)
@@ -87,7 +92,7 @@ def is_flood(message: Message, text: str) -> bool:
     while len(recent) > MAX_RECENT_MESSAGES_PER_USER:
         recent.popleft()
 
-    return len(timestamps) >= 6
+    return len(timestamps) >= FLOOD_MESSAGE_LIMIT
 
 
 def has_any_link(message: Message, text: str) -> bool:
