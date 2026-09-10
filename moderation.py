@@ -12,6 +12,7 @@ PROFANITY_ROOTS = {
 SPAM_ROOTS = {
     "заработок", "заработа", "инвестиц", "казино", "ставк", "крипт",
     "наркотик", "наркот", "спайс", "мефедрон",
+    "порн", "проститут", "эскорт", "секс",
 }
 
 NEGATIVE_PHRASES = {
@@ -24,7 +25,6 @@ NEGATIVE_PHRASES = {
 
 def normalize_text(text: str) -> str:
     text = unicodedata.normalize("NFKC", text or "").casefold()
-    # Common Latin lookalikes used in Russian profanity obfuscation.
     replacements = str.maketrans({
         "a": "а", "b": "б", "c": "с", "e": "е", "h": "х",
         "i": "и", "k": "к", "m": "м", "n": "н", "o": "о",
@@ -33,7 +33,6 @@ def normalize_text(text: str) -> str:
         "0": "о", "1": "и", "3": "з", "4": "ч", "6": "б",
     })
     text = text.translate(replacements)
-    # Keep letters only for root matching: х-у-й -> хуй, х у й -> хуй.
     return re.sub(r"[^а-яё]+", "", text)
 
 
@@ -46,7 +45,6 @@ def normalize_spaced(text: str) -> str:
 def contains_link(text: str) -> bool:
     if not text:
         return False
-    # @username is a normal Telegram mention and is deliberately allowed.
     return bool(re.search(r"(?:https?://|www\.|t\.me/|telegram\.me/)", text, re.I))
 
 
@@ -54,18 +52,14 @@ def classify(text: str):
     normalized = normalize_text(text)
     spaced = normalize_spaced(text)
 
-    # Profanity and abusive roots catch grammatical forms too:
-    # говно/говна/говном, херня/херню, жопа/жопу, etc.
     for root in PROFANITY_ROOTS:
         if normalize_text(root) in normalized:
             return "profanity"
 
-    # Explicitly negative/reputation-damaging phrases.
     for phrase in NEGATIVE_PHRASES:
         if normalize_spaced(phrase) in spaced:
             return "negative"
 
-    # Spam/scam/drug-related terms and their grammatical forms.
     for root in SPAM_ROOTS:
         if normalize_text(root) in normalized:
             return "spam"
