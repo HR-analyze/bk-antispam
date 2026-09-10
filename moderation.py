@@ -2,7 +2,6 @@ import re
 import unicodedata
 
 
-# Мат: ловим обычные, изменённые и частично завуалированные написания.
 PROFANITY = {
     "блядь", "блять", "бляд", "бля", "блядина", "бляди",
     "ебать", "ебал", "ебан", "ебаный", "ебануто", "ебанул", "ебись", "ебло", "еблан",
@@ -13,12 +12,11 @@ PROFANITY = {
     "шлюха", "шлюш", "сучка", "сука", "сучар", "говно", "говнюк", "дерьмо", "дрянь",
 }
 
-# Явные рекламные/спамовые фразы. Не используем нейтральные слова вроде
-# «сотрудник» или «акция» сами по себе, чтобы не задевать клиентов.
 SPAM_PHRASES = (
     "заработок от",
     "заработок в день",
     "заработок без вложений",
+    "заработок на крипте",
     "легкий заработок",
     "лёгкий заработок",
     "быстрый заработок",
@@ -37,6 +35,7 @@ SPAM_PHRASES = (
     "вакансии",
     "работа для",
     "ставки на спорт",
+    "ставки",
     "букмекер",
     "казино",
     "бонус за регистрацию",
@@ -46,7 +45,17 @@ SPAM_PHRASES = (
     "вы выиграли",
     "вы выиграли приз",
     "выигрыш",
-)
+    "криптовалюта",
+    "инвестиции с гарантией",
+    "гарантированный доход",
+    "интимные услуги",
+    "интим за деньги",
+    "секс за деньги",
+    "секс услуги",
+    "эскорт",
+    "онлифанс",
+    "onlyfans",
+}
 
 CONTACT_PHRASES = (
     "пиши в лс",
@@ -76,13 +85,18 @@ PROMO_WORDS = (
     "знакомств",
     "девушки",
     "мужчины",
+    "крипт",
+    "инвестиц",
+    "эскорт",
+    "интим",
+    "онлифанс",
+    "onlyfans",
 )
 
 URL_RE = re.compile(
     r"(?i)(?:https?://|www\.|t\.me/|telegram\.me/|tg://|wa\.me/|viber://|mailto:)\S+"
 )
 
-# Домены без протокола: example.ru, site.com/path и т. п.
 BARE_DOMAIN_RE = re.compile(
     r"(?i)(?<![@\w])(?:[a-zа-я0-9](?:[a-zа-я0-9-]{0,61}[a-zа-я0-9])?\.)+"
     r"(?:ru|рф|com|net|org|info|biz|me|cc|site|online|shop|store|pro|top|xyz|io|co|su|dev|app|link|live)"
@@ -97,9 +111,6 @@ PHONE_RE = re.compile(
 
 def normalize(text: str) -> str:
     text = unicodedata.normalize("NFKC", text or "").lower()
-
-    # Частые замены в завуалированном мате. Замены применяются только
-    # для проверки подозрительных слов, а не для изменения исходного текста.
     text = text.translate(str.maketrans({
         "0": "о", "1": "и", "3": "з", "4": "ч", "5": "с",
         "6": "б", "7": "т", "8": "в", "9": "д",
@@ -109,8 +120,6 @@ def normalize(text: str) -> str:
         "a": "а", "e": "е", "o": "о", "p": "р", "c": "с", "x": "х",
         "y": "у", "k": "к", "m": "м", "t": "т",
     }))
-
-    # Сжимаем повтор букв: «бляяяяядь» -> «блядь».
     text = re.sub(r"(.)\1{2,}", r"\1\1", text)
     return text
 
@@ -137,8 +146,6 @@ def contains_profanity(text: str) -> bool:
     for word in PROFANITY:
         if re.search(rf"(?<![а-яёa-z]){re.escape(word)}(?![а-яёa-z])", padded):
             return True
-
-        # Варианты с пробелами/точками/символами: «б л я д ь».
         if len(word) >= 4 and word in compacted:
             return True
 
@@ -151,7 +158,6 @@ def looks_like_spam(text: str) -> bool:
 
     normalized = re.sub(r"\s+", " ", normalize(text)).strip()
 
-    # Сильные готовые шаблоны.
     if any(phrase in normalized for phrase in SPAM_PHRASES):
         return True
 
@@ -162,11 +168,14 @@ def looks_like_spam(text: str) -> bool:
         return True
 
     # Знакомства/сексуализированное предложение + контакт.
-    dating = re.search(r"\b(знакомств\w*|познаком\w*|девуш\w*|парн\w*|мужчин\w*|женщин\w*)\b", normalized)
+    dating = re.search(
+        r"\b(знакомств\w*|познаком\w*|девуш\w*|парн\w*|мужчин\w*|женщин\w*|эскорт\w*|интим\w*)\b",
+        normalized,
+    )
     if dating and any(phrase in normalized for phrase in CONTACT_PHRASES):
         return True
 
-    # Телефон + рекламные/коммерческие признаки.
+    # Финансовый спам: телефон + коммерческий/рекламный признак.
     if PHONE_RE.search(normalized) and any(word in normalized for word in PROMO_WORDS):
         return True
 
@@ -177,7 +186,7 @@ def looks_like_spam(text: str) -> bool:
         if upper_ratio >= 0.80 and any(word in normalized for word in PROMO_WORDS):
             return True
 
-    # Типичный спам: много emoji/символов, короткий текст и рекламный призыв.
+    # Короткий агрессивный рекламный шаблон с большим количеством символов.
     symbols = sum(1 for ch in text if not ch.isalnum() and not ch.isspace())
     if len(normalized) <= 180 and symbols >= 8 and any(
         phrase in normalized for phrase in CONTACT_PHRASES
@@ -188,11 +197,6 @@ def looks_like_spam(text: str) -> bool:
 
 
 def classify(text: str) -> str | None:
-    """Return a deletion reason or None.
-
-    Priority is intentional: links and profanity are unconditional;
-    spam rules are applied afterwards.
-    """
     if contains_link(text):
         return "link"
     if contains_profanity(text):
