@@ -1,59 +1,73 @@
 import re
 import unicodedata
 
-PROFANITY_WORDS = {
-    "бляд", "бля", "еб", "выеб", "въеб", "заеб", "хуйн", "хуй",
-    "хуесос", "хуеплет", "хует", "хуят", "пизд", "пидор", "пидар",
-    "пидорас", "петух", "петушар", "говн", "дерьм", "ссан", "ссы",
-    "шлюх", "шалав", "манд", "уеб", "уёб", "долбоеб", "долбоёб",
-    "мудак", "мудил", "ублюд", "сук", "жопа",
+PROFANITY_ROOTS = {
+    "бляд", "блят", "еб", "выеб", "въеб", "заеб", "хуйн", "хуес",
+    "хуеп", "хует", "хуят", "херн", "хер", "пизд", "пидор", "пидар",
+    "пидорас", "петух", "петушар", "говн", "дерьм", "ссан", "шлюх",
+    "шалав", "манд", "уеб", "уёб", "долбоеб", "долбоёб", "мудак",
+    "мудил", "ублюд", "сук", "жоп",
 }
 
-SPAM_WORDS = {
-    "заработок", "заработать", "легкий заработок", "лёгкий заработок",
-    "быстрый заработок", "легкие деньги", "лёгкие деньги", "легко и просто",
-    "инвестиции", "инвестируй", "доход без вложений", "пассивный доход",
-    "казино", "ставки", "ставка", "крипта", "криптовалюта",
-    "наркот", "наркотики", "наркота", "спайс", "мефедрон",
+SPAM_ROOTS = {
+    "заработок", "заработа", "инвестиц", "казино", "ставк", "крипт",
+    "наркотик", "наркот", "спайс", "мефедрон",
+}
+
+NEGATIVE_PHRASES = {
+    "обслуживание ужасное", "обслуживание ужасно", "ужасное обслуживание",
+    "ужасный сервис", "ужасное место", "херня а не место", "говно а не",
+    "скам проект", "скам-проект", "кто хочет денег", "легкий досуг",
+    "лёгкий досуг", "легкий секс", "лёгкий секс",
 }
 
 
 def normalize_text(text: str) -> str:
     text = unicodedata.normalize("NFKC", text or "").casefold()
+    # Common Latin lookalikes used in Russian profanity obfuscation.
     replacements = str.maketrans({
-        "a": "а", "b": "в", "c": "с", "e": "е", "k": "к",
-        "m": "м", "o": "о", "p": "р", "t": "т", "x": "х",
-        "y": "у", "$": "с", "@": "а", "0": "о", "3": "з",
-        "4": "ч", "6": "б", "1": "и",
+        "a": "а", "b": "б", "c": "с", "e": "е", "h": "х",
+        "i": "и", "k": "к", "m": "м", "n": "н", "o": "о",
+        "p": "п", "r": "р", "s": "с", "t": "т", "u": "у",
+        "v": "в", "x": "х", "y": "у", "z": "з", "$": "с",
+        "0": "о", "1": "и", "3": "з", "4": "ч", "6": "б",
     })
     text = text.translate(replacements)
-    return re.sub(r"[\W_]+", "", text, flags=re.UNICODE)
+    # Keep letters only for root matching: х-у-й -> хуй, х у й -> хуй.
+    return re.sub(r"[^а-яё]+", "", text)
+
+
+def normalize_spaced(text: str) -> str:
+    text = unicodedata.normalize("NFKC", text or "").casefold()
+    text = re.sub(r"[^а-яёa-z0-9@]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def contains_link(text: str) -> bool:
     if not text:
         return False
-    # @username is a normal Telegram mention and must NOT be treated as a link.
+    # @username is a normal Telegram mention and is deliberately allowed.
     return bool(re.search(r"(?:https?://|www\.|t\.me/|telegram\.me/)", text, re.I))
-
-
-def _contains_term(normalized: str, term: str) -> bool:
-    term_normalized = normalize_text(term)
-    return bool(term_normalized and term_normalized in normalized)
 
 
 def classify(text: str):
     normalized = normalize_text(text)
+    spaced = normalize_spaced(text)
 
-    for word in PROFANITY_WORDS:
-        if _contains_term(normalized, word):
+    # Profanity and abusive roots catch grammatical forms too:
+    # говно/говна/говном, херня/херню, жопа/жопу, etc.
+    for root in PROFANITY_ROOTS:
+        if normalize_text(root) in normalized:
             return "profanity"
 
-    spaced = unicodedata.normalize("NFKC", text or "").casefold()
-    spaced = re.sub(r"[^\w\s]+", " ", spaced, flags=re.UNICODE)
-    spaced = re.sub(r"\s+", " ", spaced).strip()
-    for phrase in SPAM_WORDS:
-        if phrase in spaced or _contains_term(normalized, phrase):
+    # Explicitly negative/reputation-damaging phrases.
+    for phrase in NEGATIVE_PHRASES:
+        if normalize_spaced(phrase) in spaced:
+            return "negative"
+
+    # Spam/scam/drug-related terms and their grammatical forms.
+    for root in SPAM_ROOTS:
+        if normalize_text(root) in normalized:
             return "spam"
 
     return None
