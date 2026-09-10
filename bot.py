@@ -101,6 +101,16 @@ def in_target_chat(message: Message) -> bool:
     return CHAT_ID is None or message.chat.id == CHAT_ID
 
 
+def profanity_variants(text: str) -> str:
+    """Add common Latin/symbol substitutions used to evade profanity filters."""
+    lowered = (text or "").lower()
+    variant = lowered.translate(str.maketrans({
+        "$": "с",
+        "s": "с",
+    }))
+    return text + " " + variant
+
+
 @router.message(CommandStart())
 async def start_command(message: Message) -> None:
     await message.answer("✅ BK AntiSpam работает.")
@@ -122,11 +132,12 @@ async def moderate(message: Message, bot: Bot) -> None:
         return
 
     text = message.text or message.caption or ""
+    classification_text = profanity_variants(text)
 
     if has_any_link(message, text):
         reason = "link"
     else:
-        reason = classify(text)
+        reason = classify(classification_text)
 
     if reason is None and is_flood(message, text):
         reason = "flood"
