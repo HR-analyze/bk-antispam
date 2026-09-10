@@ -19,6 +19,12 @@ SPAM_PATTERNS = [
     r"\bпорн\w*\b", r"\bпроститут\w*\b", r"\bэскорт\w*\b", r"\bсекс\w*\b",
 ]
 
+JOB_SPAM_PHRASES = {
+    "подработка", "подработку", "подработке", "подработки", "шабашка", "шабашку",
+    "шабашке", "шабашки", "предоплата", "хорошо оплачиваем", "хорошо оплачиваемую",
+    "оплачиваемую подработку", "работы на пару часов", "работа на пару часов",
+}
+
 NEGATIVE_PHRASES = {
     "обслуживание ужасное", "обслуживание ужасно", "ужасное обслуживание",
     "ужасный сервис", "ужасное место", "херня а не место", "говно а не",
@@ -27,6 +33,11 @@ NEGATIVE_PHRASES = {
     "детское порно", "детское порн", "кровь девственницы",
     "child porn", "child pornography", "sexual content involving minors",
 }
+
+JOB_SIGNALS = (
+    "подработ", "шабаш", "предоплат", "кандидат", "оплачиваем", "пару часов",
+    "на сегодня", "сегодня", "мужчин и женщин", "пишите",
+)
 
 
 def normalize_text(text: str) -> str:
@@ -69,6 +80,17 @@ def classify(text: str):
             return "negative"
 
     if _matches_any(normalized, SPAM_PATTERNS):
+        return "spam"
+
+    # Job/earnings spam: require at least one core job term plus another
+    # recruiting/payment/time signal, so ordinary work-related conversation
+    # containing only "работа" is not deleted.
+    job_core = ("подработ" in normalized or "шабаш" in normalized)
+    job_signal_count = sum(1 for signal in JOB_SIGNALS if normalize_text(signal) in normalized)
+    if job_core and job_signal_count >= 2:
+        return "spam"
+
+    if "предоплат" in normalized and any(x in normalized for x in ("кандидат", "мужчин", "женщин", "пару часов", "пишите")):
         return "spam"
 
     return None
