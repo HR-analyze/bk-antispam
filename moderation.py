@@ -28,14 +28,40 @@ NEGATIVE_PHRASES = {
     "child porn", "child pornography", "sexual content involving minors",
 }
 
+# Recruitment / job-offer spam. These are deliberately phrase-based so that
+# ordinary work discussion is not removed just because it contains "работа".
+JOB_PHRASES = {
+    "подработка", "подработку", "подработке", "подработки", "подработать",
+    "шабашка", "шабашку", "шабашке", "шабашки", "хорошая подработка",
+    "хорошо оплачиваемая подработка", "хорошо оплачиваемую подработку",
+    "оплачиваемая подработка", "оплачиваемую подработку",
+    "ищу кандидатов", "ищем кандидатов", "нужны кандидаты", "ищу сотрудников",
+    "нужны сотрудники", "требуются сотрудники", "требуются люди", "нужны люди",
+    "нужны мужчины", "нужны женщины", "мужчины и женщины", "парни и девушки",
+    "открыла магазин", "открыл магазин", "открыли магазин", "открываем магазин",
+    "открыла точку", "открыл точку", "открыли точку", "новая схема", "новой схемы",
+    "есть варианты", "есть вариант", "варианты работы", "вариант работы",
+    "новая работа", "новые вакансии", "новая вакансия", "есть вакансия",
+    "есть вакансии", "срочно нужны", "срочно требуются", "нужны на сегодня",
+    "нужны на завтра", "работа на пару часов", "работы на пару часов",
+    "работа на несколько часов", "на несколько часов", "на пару часов",
+    "предоплата", "предоплата имеется", "предоплата есть", "оплата сразу",
+    "выплата сразу", "деньги сразу", "легкий заработок", "лёгкий заработок",
+    "легкие деньги", "лёгкие деньги", "заработок без опыта", "без опыта",
+    "пишите в личку", "пишите в лс", "пишите мне", "кому интересно пишите",
+}
+
 JOB_SIGNALS = (
-    "подработ", "шабаш", "предоплат", "кандидат", "оплачиваем", "пару часов",
-    "на сегодня", "сегодня", "мужчин и женщин", "пишите",
+    "подработ", "шабаш", "кандидат", "сотрудник", "ваканс", "предоплат",
+    "оплата", "выплата", "заработ", "схем", "магазин", "точк", "пару часов",
+    "несколько часов", "мужчин", "женщин", "парни", "девушки", "пишите",
+    "в личку", "в лс",
 )
 
 OBFUSCATED_JOB_PATTERNS = (
     r"\b[wv]абашк\w*\b",
     r"\bш[аa]б[аa]шк\w*\b",
+    r"\bп[оo]д[рr][аa]б[оo]тк\w*\b",
 )
 
 
@@ -81,16 +107,18 @@ def classify(text: str):
     if _matches_any(normalized, SPAM_PATTERNS):
         return "spam"
 
-    job_core = ("подработ" in normalized or "шабаш" in normalized)
+    # Explicit phrase dictionary catches typical recruiting advertisements.
+    for phrase in JOB_PHRASES:
+        if normalize_spaced(phrase) in spaced:
+            return "job_spam"
+
+    # Combine independent job signals to catch new phrasings without making
+    # the single word "работа" a spam trigger.
     job_signal_count = sum(1 for signal in JOB_SIGNALS if normalize_text(signal) in normalized)
-    if job_core and job_signal_count >= 2:
-        return "spam"
+    if job_signal_count >= 2:
+        return "job_spam"
 
-    if "предоплат" in normalized and any(x in normalized for x in ("кандидат", "мужчин", "женщин", "пару часов", "пишите")):
-        return "spam"
-
-    # Explicit obfuscations such as wабашка are job-spam even without a second signal.
     if _matches_any(spaced, OBFUSCATED_JOB_PATTERNS):
-        return "spam"
+        return "job_spam"
 
     return None
