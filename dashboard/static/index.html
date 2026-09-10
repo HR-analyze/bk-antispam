@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>BK AntiSpam — дашборд</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%232a78d6'/%3E%3Cpath d='M4 11V6h2v5H4zm3 0V4h2v7H7zm3 0V8h2v3h-2z' fill='white'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="wrap">
+
+  <div class="topbar">
+    <h1>BK AntiSpam</h1>
+    <span class="sub" id="sub">модерация комментариев</span>
+    <span class="spacer"></span>
+    <button class="btn ghost" id="theme-btn" type="button" title="Светлая / тёмная тема">◐ тема</button>
+    <button class="btn" id="refresh-btn" type="button">↻ обновить</button>
+  </div>
+
+  <div class="banner" id="error-banner" hidden></div>
+
+  <!-- One filter row scoping every card below it. -->
+  <form class="filters" id="filters" autocomplete="off">
+    <div class="field">
+      <label for="f-period">Период</label>
+      <select id="f-period">
+        <option value="1">Сутки</option>
+        <option value="7">7 дней</option>
+        <option value="30" selected>30 дней</option>
+        <option value="90">90 дней</option>
+        <option value="365">Год</option>
+        <option value="">Всё время</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="f-class">Классификация</label>
+      <select id="f-class"><option value="">Все</option></select>
+    </div>
+    <div class="field">
+      <label for="f-status">Статус</label>
+      <select id="f-status">
+        <option value="">Все</option>
+        <option value="true">Удалённые</option>
+        <option value="false">Оставленные</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="f-q">Поиск по тексту</label>
+      <input type="search" id="f-q" placeholder="например: подработка">
+    </div>
+    <div class="field">
+      <label for="f-limit">На странице</label>
+      <select id="f-limit">
+        <option>25</option>
+        <option selected>50</option>
+        <option>100</option>
+        <option>200</option>
+      </select>
+    </div>
+    <span class="spacer"></span>
+    <span id="user-chip-slot"></span>
+    <button class="btn ghost" id="reset-btn" type="button">сбросить</button>
+  </form>
+
+  <section class="tiles" id="tiles" aria-label="Сводка"></section>
+
+  <section class="grid">
+    <div class="card">
+      <div class="card-head">
+        <h2>Сообщения по дням</h2>
+        <div class="legend" aria-hidden="true">
+          <span><i class="swatch kept"></i>оставлено</span>
+          <span><i class="swatch removed"></i>удалено</span>
+        </div>
+        <span class="spacer"></span>
+        <button class="btn ghost" id="daily-view-btn" type="button" aria-pressed="false">таблица</button>
+      </div>
+      <div class="chart-host" id="daily-host"></div>
+      <div class="table-scroll" id="daily-table" hidden></div>
+    </div>
+  </section>
+
+  <section class="grid two">
+    <div class="card">
+      <div class="card-head">
+        <h2>Классификация</h2>
+        <div class="legend" aria-hidden="true">
+          <span><i class="swatch kept"></i>оставлено</span>
+          <span><i class="swatch removed"></i>удалено</span>
+        </div>
+        <span class="spacer"></span>
+        <button class="btn ghost" id="clean-btn" type="button" aria-pressed="false">показать чистые</button>
+      </div>
+      <div class="sub" id="clean-note"></div>
+      <div class="chart-host" id="class-host"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Авторы с удалёнными сообщениями</h2></div>
+      <div class="table-scroll" id="top-users"></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Сообщения</h2>
+      <span class="spacer"></span>
+      <span class="sub" id="messages-count"></span>
+    </div>
+    <div class="table-scroll">
+      <table id="messages-table">
+        <thead>
+          <tr>
+            <th style="width:150px">Время</th>
+            <th style="width:170px">Автор</th>
+            <th>Текст</th>
+            <th style="width:120px">Классификация</th>
+            <th style="width:110px">Статус</th>
+          </tr>
+        </thead>
+        <tbody id="messages-body"></tbody>
+      </table>
+    </div>
+    <div class="pager">
+      <button class="btn" id="prev-btn" type="button">← назад</button>
+      <button class="btn" id="next-btn" type="button">вперёд →</button>
+      <span class="spacer"></span>
+      <span id="pager-info"></span>
+    </div>
+  </section>
+
+  <footer>Данные только на чтение. Дашборд не изменяет базу.</footer>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

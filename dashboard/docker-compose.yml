@@ -1,0 +1,13 @@
+services:
+  dashboard:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    # Наружу отдаём только на localhost — перед ним ставьте nginx с TLS.
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
