@@ -10,6 +10,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
 from dotenv import load_dotenv
 
+from database import init_db, mark_moderation, save_message
 from moderation import classify, contains_link
 
 load_dotenv()
@@ -37,15 +38,13 @@ REASONS = {
     "profanity": "мат",
     "negative": "негатив",
     "spam": "спам/реклама",
+    "job_spam": "предложение работы/подработки",
     "flood": "флуд/повтор",
 }
 
 WINDOW_SECONDS = 60
 MAX_TIMESTAMPS_PER_USER = 20
 MAX_RECENT_MESSAGES_PER_USER = 5
-# Six different test messages in a minute must not be treated as flood.
-# Flood is primarily intended for repeated messages; a higher threshold
-# prevents normal rapid conversations and moderation testing from being deleted.
 FLOOD_MESSAGE_LIMIT = 15
 
 user_timestamps: dict[tuple[int, int], deque[float]] = defaultdict(deque)
@@ -109,25 +108,30 @@ def in_target_chat(message: Message) -> bool:
 def profanity_variants(text: str) -> str:
     """Add common Latin/symbol substitutions used to evade profanity filters."""
     lowered = (text or "").lower()
-    variant = lowered.translate(str.maketrans({
-        "$": "с",
-        "s": "с",
-    }))
+    variant = lowered.translate(str.maketrans({"$": "с", "s": "с"}))
     return text + " " + variant
+
+
+async def store_command(message: Message) -> None:
+    if in_target_chat(message):
+        await save_message(message, message.text or message.caption or "")
 
 
 @router.message(CommandStart())
 async def start_command(message: Message) -> None:
+    await store_command(message)
     await message.answer("✅ BK AntiSpam работает.")
 
 
 @router.message(Command("chat_id"))
 async def chat_id_command(message: Message) -> None:
+    await store_command(message)
     await message.answer(f"CHAT_ID: {message.chat.id}")
 
 
 @router.message(Command("ping"))
 async def ping_command(message: Message) -> None:
+    await store_command(message)
     await message.answer("🏓 pong")
 
 
@@ -137,6 +141,11 @@ async def moderate(message: Message, bot: Bot) -> None:
         return
 
     text = message.text or message.caption or ""
+
+    # Save every incoming message before moderation. Even messages that are
+    # subsequently deleted remain available for analytics and training.
+    await save_message(message, text)
+
     classification_text = profanity_variants(text)
 
     if has_any_link(message, text):
@@ -147,6 +156,13 @@ async def moderate(message: Message, bot: Bot) -> None:
     if reason is None and is_flood(message, text):
         reason = "flood"
 
+    await mark_moderation(
+        message,
+        classification=reason,
+        deleted=False,
+        reason=REASONS.get(reason) if reason else None,
+    )
+
     if not reason:
         return
 
@@ -154,6 +170,12 @@ async def moderate(message: Message, bot: Bot) -> None:
         await bot.delete_message(
             chat_id=message.chat.id,
             message_id=message.message_id,
+        )
+        await mark_moderation(
+            message,
+            classification=reason,
+            deleted=True,
+            reason=REASONS.get(reason, reason),
         )
         logging.info(
             "Deleted chat=%s message=%s reason=%s user=%s",
@@ -172,6 +194,7 @@ async def moderate(message: Message, bot: Bot) -> None:
 
 
 async def main() -> None:
+    await init_db()
     bot = Bot(BOT_TOKEN)
     dp = Dispatcher()
     dp.include_router(router)
