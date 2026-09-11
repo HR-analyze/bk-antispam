@@ -68,8 +68,6 @@ OBFUSCATED_JOB_PATTERNS = (
     r"\bпод\s*работ\w*\b",
 )
 
-# Paid one-off tasks / gigs. This catches job-like requests even when the
-# author avoids words such as "вакансия" or "подработка".
 PAID_TASK_SIGNALS = (
     "нужен человек", "нужна помощь", "ищу человека", "ищу кто", "нужен кто",
     "кто сможет", "кто сможет помочь", "кто сможет присмотреть", "присмотреть за",
@@ -79,9 +77,14 @@ PAID_TASK_SIGNALS = (
     "в сутки", "плачу", "оплачу", "оплата", "выплата",
 )
 
-# Unpaid/help requests are also treated as job/task spam in this chat.
-# The goal is to remove any public call for a person to perform a task,
-# including indirect wording such as "кто-нибудь знает, кто может помочь...".
+# Amounts can be written without a currency symbol: "4000 за 3 часа",
+# "5100 в день", "500 за час".
+PAID_AMOUNT_RE = re.compile(
+    r"\b\d{2,6}\s*(?:₽|р\.?|руб(?:лей|ля)?\b)",
+    re.IGNORECASE | re.UNICODE,
+)
+BARE_AMOUNT_RE = re.compile(r"\b\d{2,6}\b")
+
 TASK_REQUEST_PHRASES = {
     "кто сможет помочь", "кто-нибудь сможет помочь", "кто нибудь сможет помочь",
     "кто может помочь", "кто-нибудь может помочь", "кто нибудь может помочь",
@@ -108,11 +111,6 @@ TASK_ACTION_SIGNALS = (
     "помочь", "помощь", "поможет", "переезд", "перевезти", "перенести", "донести",
     "забрать", "отвезти", "привезти", "присмотреть", "посидеть", "выгул", "погулять",
     "убрать", "починить", "сделать", "собрать", "разобрать", "подменить", "присмотреть за",
-)
-
-PAID_AMOUNT_RE = re.compile(
-    r"\b\d{2,6}\s*(?:₽|р\.?|руб(?:лей|ля)?\b)",
-    re.IGNORECASE | re.UNICODE,
 )
 
 FAKE_PURCHASE_PHRASES = {
@@ -182,8 +180,6 @@ def _is_task_request_spam(normalized: str, spaced: str) -> bool:
     action_count = sum(1 for signal in TASK_ACTION_SIGNALS if normalize_spaced(signal) in spaced)
     has_task_target = any(token in normalized for token in ("переезд", "попуга", "собак", "кошк", "шкаф", "вещ", "машин", "квартир"))
 
-    # Direct public requests for someone to perform an action are spam even
-    # without payment: "кто может помочь с переездом?".
     if request_count >= 1 and action_count >= 1:
         return True
     if request_count >= 1 and has_task_target:
@@ -192,15 +188,24 @@ def _is_task_request_spam(normalized: str, spaced: str) -> bool:
 
 
 def _is_paid_task_spam(normalized: str, spaced: str) -> bool:
-    has_amount = bool(PAID_AMOUNT_RE.search(spaced))
+    has_currency_amount = bool(PAID_AMOUNT_RE.search(spaced))
     task_signal_count = sum(1 for signal in PAID_TASK_SIGNALS if normalize_spaced(signal) in spaced)
     has_people = any(token in normalized for token in ("человек", "людей", "кто", "ребят", "парень", "девуш"))
     has_time = any(token in normalized for token in ("завтра", "сегодня", "час", "дня", "день", "сутки", "постоянн"))
     has_work_word = any(token in normalized for token in ("работ", "подработ", "присмотр", "помощ", "помочь", "сделать", "посидет"))
 
-    if has_amount and task_signal_count >= 1:
+    # Important: many users omit the currency symbol: "4000 за 3 часа".
+    # Treat a bare amount as payment when it appears with a payment/time context.
+    bare_amounts = [int(value) for value in BARE_AMOUNT_RE.findall(spaced) if int(value) >= 100]
+    has_bare_amount = bool(bare_amounts)
+    has_payment_context = any(token in normalized for token in ("плачу", "оплачу", "оплата", "выплата", "за час", "за часа", "за день", "в день", "в сутки"))
+    has_duration = bool(re.search(r"\b\d{1,3}\s*(?:час(?:а|ов)?|дн(?:я|ей)?|сут(?:ки|ок)?)\b", spaced))
+
+    if (has_currency_amount or (has_bare_amount and (has_payment_context or has_duration))) and task_signal_count >= 1:
         return True
-    if has_amount and has_people and has_time and has_work_word:
+    if has_currency_amount and has_people and has_time and has_work_word:
+        return True
+    if has_bare_amount and has_people and has_time and has_work_word:
         return True
     return False
 
