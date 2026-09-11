@@ -103,7 +103,13 @@ def main() -> int:
 
     # 2. Вебхук отбирает апдейты у long polling.
     hook = api("getWebhookInfo")
-    if hook.get("ok"):
+    if not hook.get("ok"):
+        # Молча пропустить нельзя: иначе итог скажет «настроено верно», ни разу
+        # не проверив один из главных сценариев отказа.
+        fail(f"не удалось проверить вебхук: {hook.get('description')}",
+             "Проверка вебхука не выполнена. Повтори запуск, а если не проходит — "
+             'посмотри вручную: curl -s "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"')
+    else:
         info = hook["result"]
         if info.get("url"):
             fail(f"установлен вебхук {info['url']} — long polling НЕ получает апдейты",

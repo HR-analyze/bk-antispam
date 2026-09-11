@@ -60,6 +60,21 @@ SPAM_CASES = [
     # слова «работа». Если лавка сама зовёт детей на мастер-класс — снять
     # правило request+child в direct_child_job_fallback.
     ("нужны дети", "job_spam"),
+    # Мужская форма: "нужн" не является префиксом "нужен", раньше не ловилось.
+    ("нужен женщина", "job_spam"),
+    ("нужен мужчина", "job_spam"),
+    ("нужны женщина", "job_spam"),
+    ("нужен мальчик", "job_spam"),
+    # Короткие фразы о работе — только когда из них состоит всё сообщение.
+    ("работа есть", "job_spam"),
+    ("у вас работа есть?", "job_spam"),
+    ("есть работа", "job_spam"),
+    ("нужна работа", "job_spam"),
+    # Призыв писать в личку остаётся сильной фразой.
+    ("пишите в личку", "job_spam"),
+    ("пишите в лс", "job_spam"),
+    ("есть вакансия бариста?", "job_spam"),
+    ("предоплата имеется, работа на сегодня", "job_spam"),
     # фиктивная покупка
     ("купите у меня рекламу хоть на 10р", "fake_purchase"),
     ("я написал у себя, что вы купили, можете подтвердить покупку?", "fake_purchase"),
@@ -104,6 +119,28 @@ CLEAN_CASES = [
     # дети в безобидном контексте
     "нужны детям подарки на праздник, есть наборы?",
     "детям понравились эклеры, спасибо",
+    # Дательный падеж: раньше подпадал под правило "нужны + кто-то".
+    "нужны женщинам подарочные наборы",
+    "нужны мужчинам наборы",
+    "нужны девочкам заколки",
+    "нужны ребятам подарки",
+    "нужен мужчинам подарок",
+    # Короткие фразы о работе как подстрока внутри обычного отзыва.
+    "Над приложением ещё работа есть, оно часто вылетает",
+    "тут работа есть над чем подумать",
+    "спасибо за работу, есть замечания",
+    # Generic-фразы, которые раньше сами по себе давали вердикт «подработка».
+    "есть вариант подешевле?",
+    "есть варианты без сахара?",
+    "а предоплата нужна?",
+    "предоплата обязательна?",
+    "оплата сразу или при получении?",
+    "деньги сразу списались, а заказа нет",
+    "открыли магазин на Тверской? поздравляю",
+    "открыла точку продаж рядом с вами",
+    "новая работа кондитера видна сразу",
+    "торт без опыта не соберёшь",
+    "пишите мне в личку если появится",
     "у вас есть детское меню?",
     "нужен детский торт на 5 лет, есть такие?",
 ]
@@ -133,3 +170,34 @@ def test_link_from_telegram_entities():
     """Ссылка без схемы приходит из entities, а не из текста."""
     assert classify_message("тут всё", has_link=True) == "link"
     assert classify_message("тут всё", has_link=False) is None
+
+
+def test_legacy_classifications_map_to_known_keys():
+    """Легаси-метки из БД должны нормализоваться в существующие ключи.
+
+    Такая же карта лежит в dashboard/server.py — дашборд деплоится отдельно и
+    не может импортировать этот модуль.
+    """
+    from api import LEGACY_CLASSIFICATIONS
+
+    assert set(LEGACY_CLASSIFICATIONS.values()) <= set(REASONS), \
+        set(LEGACY_CLASSIFICATIONS.values()) - set(REASONS)
+
+
+def test_legacy_map_matches_the_dashboard_copy():
+    """Две копии карты не должны разъезжаться."""
+    import ast
+    from pathlib import Path
+
+    from api import LEGACY_CLASSIFICATIONS
+
+    source = Path(__file__).resolve().parents[1] / "dashboard" / "server.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    found = {
+        target.id: ast.literal_eval(node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name) and target.id == "LEGACY_CLASSIFICATIONS"
+    }
+    assert found.get("LEGACY_CLASSIFICATIONS") == LEGACY_CLASSIFICATIONS
