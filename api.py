@@ -6,6 +6,11 @@ from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from psycopg.rows import dict_row
 
+# main.py выставляет эту переменную, когда поднимает бота вместе с API.
+# Если /health показывает bot_running=false, значит запущено только веб-
+# приложение и Telegram никто не слушает.
+BOT_RUNNING_ENV = "BK_BOT_RUNNING"
+
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 DASHBOARD_API_KEY = os.getenv("DASHBOARD_API_KEY", "").strip()
 
@@ -84,7 +89,13 @@ async def fetch_one(query: str, params: tuple = ()):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "database_configured": bool(DATABASE_URL), "api_key_configured": bool(DASHBOARD_API_KEY)}
+    return {
+        "status": "ok",
+        "database_configured": bool(DATABASE_URL),
+        "api_key_configured": bool(DASHBOARD_API_KEY),
+        # false => запущено только веб-приложение, бот не работает
+        "bot_running": os.getenv(BOT_RUNNING_ENV) == "1",
+    }
 
 
 @app.get("/api/stats")

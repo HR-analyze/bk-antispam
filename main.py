@@ -1,17 +1,33 @@
 import asyncio
+import logging
 import os
 
 import uvicorn
 
-from api import app
+from api import BOT_RUNNING_ENV, app
 from bot import main as bot_main
 
 
+def web_port() -> int:
+    """Порт веб-части.
+
+    Платформы называют переменную по-разному (PORT, WEB_PORT), а промах по
+    порту выглядит как «домен не отвечает».
+    """
+    for name in ("PORT", "WEB_PORT", "APP_PORT"):
+        value = os.getenv(name, "").strip()
+        if value.isdigit():
+            return int(value)
+    return 8000
+
+
 async def run_api() -> None:
+    port = web_port()
+    logging.info("Веб-часть слушает 0.0.0.0:%s", port)
     config = uvicorn.Config(
         app,
         host="0.0.0.0",
-        port=int(os.getenv("PORT", "8000")),
+        port=port,
         log_level="info",
     )
     server = uvicorn.Server(config)
@@ -19,6 +35,10 @@ async def run_api() -> None:
 
 
 async def main() -> None:
+    # Метка для /health: платформа с автоопределением может запустить только
+    # ASGI-приложение (uvicorn main:app), и тогда бот не стартует вовсе, а
+    # домен при этом отвечает — отказ получается незаметным.
+    os.environ[BOT_RUNNING_ENV] = "1"
     await asyncio.gather(
         bot_main(),
         run_api(),

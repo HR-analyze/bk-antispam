@@ -104,3 +104,39 @@ def test_check_is_silent_for_a_non_admin_in_a_group():
 @pytest.mark.parametrize("command", ["/start", "/ping", "/chat_id", "/version"])
 def test_every_documented_command_answers(command):
     assert replies(feed(command)), f"{command} остался без ответа"
+
+
+def test_health_reports_whether_the_bot_is_running():
+    """Веб-билдер платформы поднимает только ASGI-приложение.
+
+    Бот тогда не стартует вовсе, а домен отвечает — отказ незаметен. /health
+    обязан это показывать.
+    """
+    import asyncio
+    import os
+
+    import api
+
+    os.environ.pop(api.BOT_RUNNING_ENV, None)
+    assert asyncio.run(api.health())["bot_running"] is False
+
+    os.environ[api.BOT_RUNNING_ENV] = "1"
+    try:
+        assert asyncio.run(api.health())["bot_running"] is True
+    finally:
+        os.environ.pop(api.BOT_RUNNING_ENV, None)
+
+
+@pytest.mark.parametrize(
+    "env,expected",
+    [({}, 8000), ({"PORT": "8080"}, 8080), ({"WEB_PORT": "3000"}, 3000),
+     ({"PORT": "не число"}, 8000)],
+)
+def test_web_port_reads_the_usual_platform_variables(env, expected, monkeypatch):
+    import main
+
+    for name in ("PORT", "WEB_PORT", "APP_PORT"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    assert main.web_port() == expected
