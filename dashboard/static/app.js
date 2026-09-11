@@ -8,6 +8,7 @@ const CLASS_LABELS = {
   profanity: "мат",
   negative: "негатив",
   spam: "спам/реклама",
+  adult: "порнография/интим",
   job_spam: "работа/подработка",
   fake_purchase: "фиктивная покупка",
   paid_task: "платная просьба",

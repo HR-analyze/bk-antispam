@@ -35,7 +35,11 @@ SHORT_JOB_PHRASES = ("работа есть", "есть работа", "нужн
 # Служебные слова, которые можно отбросить перед сравнением: "у вас работа есть"
 # — то же самое, что "работа есть". Всё остальное делает сообщение уже не
 # короткой формой: "спасибо, работа есть замечания" — это обычный отзыв.
-SHORT_JOB_FILLER = frozenset({"а", "у", "вас", "тут", "здесь", "ли", "же", "то", "вообще", "может", "есть ли"})
+SHORT_JOB_FILLER = frozenset({
+    "а", "у", "вас", "тут", "здесь", "ли", "же", "то", "вообще", "может", "есть ли",
+    # Обращение к чату: "девочки, есть работа" — это то же "есть работа".
+    "девочки", "девушки", "девчонки", "ребята", "парни", "дамы", "народ", "всем", "коллеги",
+})
 
 # Убранные из JOB_PHRASES фрагменты. Сами по себе вердикта не дают, но в
 # сочетании с рабочим контекстом вне самой фразы — дают: "Работа на 2 часа,
@@ -57,6 +61,42 @@ FAKE_PURCHASE_PHRASES = {"купите у меня рекламу", "купит�
 FAKE_PURCHASE_SIGNALS = ("купите у меня", "купить у меня", "закажите у меня", "реклам", "покупк", "заказ", "оплат", "чек", "скрин", "доказательств", "подтверд", "подтвержден", "для отчета", "для отчёта", "для кейса", "для портфолио", "для статистики", "для клиента", "я написал у себя", "я написала у себя", "в моем тгк", "в моём тгк", "в моем канале", "в моём канале", "посмотрите мой тгк", "посмотрите мой канал", "выручите", "хоть 10", "хоть 10р", "хоть 10 руб", "хоть 10 рублей", "хоть рубль", "символическую сумму")
 FAKE_PURCHASE_AMOUNT_RE = re.compile(r"(?:хоть\s*)?(?:\d{1,3}\s*(?:₽|р\.?|руб(?:лей|ля)?\b)|руб(?:ль|ля|лей)\b)", re.IGNORECASE | re.UNICODE)
 
+
+# --- порнография, интим-услуги и «взрослый» спам ---------------------------
+# Кириллица: проверяется по normalize_text, поэтому обфускация латиницей и
+# цифрами ("п0рно", "пopно") снимается автоматически.
+ADULT_PATTERNS = (
+    r"\bпорн\w*", r"\bэроти[кч](?!но\b)\w*", r"\bпроститут\w*", r"\bэскорт\w*",
+    r"\bинтим\w*", r"\bминет\w*", r"\bкуни\b", r"\bстриптиз\w*",
+    r"\bразврат\w*", r"\bорги[ия]\w*", r"\bфетиш\w*", r"\bвебкам\w*",
+    r"\bнюдс\w*", r"\bнюдес\w*", r"\bхентай\w*", r"\bбдсм\b",
+    r"\bонлифанс\w*", r"\bсекс\w*", r"\bсексвайф\w*",
+    r"\bмалолетк\w*", r"\bпедофил\w*", r"\bлолит\w*",
+    # Корни, совпадающие с обычными словами. Без исключений фильтр удалял бы
+    # "анализ состава", "аналог сахара", "путаница с заказом".
+    r"\bанал(?!из|ог|ит)\w*",
+    r"\bпутан(?!иц)\w*",
+    r"\bтрах(?!е)\w*",
+    r"\bиндивидуалк\w*",
+)
+# Латиница: проверяется по raw_spaced, где латиница сохраняется как есть.
+ADULT_RAW_PATTERNS = (
+    r"\bporn\w*", r"\bxxx\b", r"\bnsfw\b", r"\bhentai\w*",
+    r"\bonlyfans?\b", r"\bonly\s*fans\b", r"\bnudes?\b", r"\bwebcam\w*",
+    r"\bescort\w*", r"\bmilf\b", r"\bbdsm\b", r"\bcamgirl\w*",
+)
+ADULT_PHRASES = (
+    "интим услуги", "интим за деньги", "интим досуг", "интим фото",
+    "приват шоу", "приватное шоу", "голые фото", "голое фото", "голышом",
+    "секс за деньги", "детское порно", "детская порнография",
+    # "для взрослых" отдельно не берём: "торт для взрослых" — обычный заказ.
+    "контент для взрослых", "видео для взрослых", "сайт для взрослых",
+    "канал для взрослых", "чат для взрослых", "фото для взрослых",
+)
+# "18+" считается маркером: в комментариях кулинарной лавки это объявление.
+ADULT_AGE_RE = re.compile(r"\b18\s*\+", re.IGNORECASE | re.UNICODE)
+
+
 def normalize_text(text: str) -> str:
     text = unicodedata.normalize("NFKC", text or "").casefold()
     replacements = str.maketrans({"a": "а", "b": "б", "c": "с", "e": "е", "h": "х", "i": "и", "k": "к", "m": "м", "n": "н", "o": "о", "p": "п", "r": "р", "s": "с", "t": "т", "u": "у", "v": "в", "x": "х", "y": "у", "z": "з", "$": "с", "0": "о", "1": "и", "3": "з", "4": "ч", "6": "б"})
@@ -71,6 +111,23 @@ def raw_spaced(text: str) -> str:
     text = unicodedata.normalize("NFKC", text or "").casefold()
     text = re.sub(r"[^а-яёa-z0-9₽@]+", " ", text)
     return re.sub(r"\s+", " ", text).strip()
+
+def join_spaced_letters(text: str) -> str:
+    """Склеивает цепочки одиночных букв: "п о р н о" -> "порно"."""
+    tokens = text.split()
+    out, run = [], []
+    for token in tokens:
+        if len(token) == 1 and token.isalpha():
+            run.append(token)
+            continue
+        if run:
+            out.append("".join(run))
+            run = []
+        out.append(token)
+    if run:
+        out.append("".join(run))
+    return " ".join(out)
+
 
 def compact_spaced(text: str) -> str:
     return re.sub(r"\s+", "", text)
@@ -119,6 +176,20 @@ def _is_paid_task_spam(normalized: str, spaced: str, raw: str) -> bool:
 # от обычной клиентской реплики именно выгодой автора. Без этого требования
 # правило удаляло "подтвердите заказ пожалуйста" и "чек не дали при покупке".
 FAKE_PURCHASE_SELF_INTEREST = ("у меня", "у себя", "мой тгк", "моем тгк", "моём тгк", "мой канал", "моем канале", "моём канале", "для отчета", "для отчёта", "ради отчета", "ради отчёта", "для кейса", "для портфолио", "для статистики", "для клиента", "что вы купили", "что вы у меня купили", "что покупали", "выручите", "символическую сумму")
+
+def _is_adult_spam(normalized: str, spaced: str, raw: str, plain: str) -> bool:
+    """Порнография и интим-услуги."""
+    if _matches_any(normalized, ADULT_PATTERNS):
+        return True
+    if _matches_any(raw, ADULT_RAW_PATTERNS):
+        return True
+    if any(normalize_spaced(phrase) in spaced for phrase in ADULT_PHRASES):
+        return True
+    joined = join_spaced_letters(spaced)
+    if joined != spaced and _matches_any(joined, ADULT_PATTERNS):
+        return True
+    return bool(ADULT_AGE_RE.search(plain))
+
 
 def _count_signals(spaced: str, signals) -> int:
     """Считает сигналы по началу слова.
@@ -173,6 +244,8 @@ def classify(text: str):
     normalized = normalize_text(text)
     spaced = normalize_spaced(text)
     raw = raw_spaced(text)
+    plain = " ".join((text or "").casefold().split())
+    if _is_adult_spam(normalized, spaced, raw, plain): return "adult"
     if _matches_any(normalized, PROFANITY_PATTERNS): return "profanity"
     if any(normalize_spaced(phrase) in spaced for phrase in NEGATIVE_PHRASES): return "negative"
     if _matches_any(normalized, SPAM_PATTERNS): return "spam"
@@ -198,6 +271,7 @@ REASONS = {
     "profanity": "мат",
     "negative": "негатив",
     "spam": "спам/реклама",
+    "adult": "порнография/интим",
     "job_spam": "предложение работы/подработки",
     "fake_purchase": "фиктивная покупка/доказательство оплаты",
     "paid_task": "платная просьба/бытовая подработка",
@@ -213,8 +287,17 @@ def text_variants(text: str) -> tuple[str, ...]:
     варианта, и каждая проверка прогоняется по обоим.
     """
     original = text or ""
-    swapped = original.lower().translate(str.maketrans({"$": "с", "s": "с"}))
-    return (original,) if swapped == original.lower() else (original, swapped)
+    lowered = original.lower()
+    variants = [original]
+    swapped = lowered.translate(str.maketrans({"$": "с", "s": "с"}))
+    if swapped != lowered:
+        variants.append(swapped)
+    # normalize_text мапит латинскую "p" в "п" (по звучанию), но визуально она
+    # неотличима от кириллической "р" — именно так и обходят фильтр: "пopно".
+    homoglyph = lowered.translate(str.maketrans({"p": "р"}))
+    if homoglyph != lowered:
+        variants.append(homoglyph)
+    return tuple(variants)
 
 
 def spaced_job_fallback(text: str) -> bool:
@@ -223,13 +306,37 @@ def spaced_job_fallback(text: str) -> bool:
     return bool(re.search(r"подработ|шабаш|ваканс", compact, re.IGNORECASE | re.UNICODE))
 
 
+# Существительные-«кто» из объявлений о наборе, включая уменьшительные,
+# сленг и частые опечатки.
+WHO_STEMS = (
+    "девочк", "девочек", "девочьк", "девчонк", "девч[её]нк", "девчат",
+    "девушк", "девушек", "девушьк", "девк", "т[её]лочк",
+    "женщин", "парн", "парень", "парней", "мужчин", "мальчик", "ребят", "модел",
+)
+# Дательный, творительный и предложный — это обращение клиента, а не набор:
+# "нужны девочкАМ заколки", "нужны ребятАМ подарки".
+_CASE_TRAP = r"(?:ам|ами|ах|ям|ями|ях)\b"
+_WHO = "(?:" + "|".join(rf"{stem}(?!{_CASE_TRAP})\w*" for stem in WHO_STEMS) + ")"
+_REQUEST = r"(?:нуж(?:ен|на|но|ны)|ищ(?:у|ем)|требу(?:ется|ются)|возьм(?:у|[её]м))"
+# До двух прилагательных между: "нужна симпатичная девочка".
+_ADJ = r"(?:\w+(?:ая|яя|ые|ие|ый|ий|ой|ую|юю|их|ых|ым|им|ое|ее)\s+){0,2}"
+
+GENDER_JOB_RE = re.compile(rf"\b{_REQUEST}\s+{_ADJ}{_WHO}\b", re.IGNORECASE | re.UNICODE)
+# Обратный порядок ловим, только когда из него и состоит сообщение (допустим
+# лишь хвост с предлогом времени). Иначе под правило попадает обычный клиент:
+# "девочки, нужна помощь с заказом".
+REVERSE_JOB_RE = re.compile(
+    rf"^{_WHO}\s+{_REQUEST}(?:\s+(?:на|в|до|к|с|по)\s+[\w\s]+)?$",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
 def direct_gender_job_fallback(text: str) -> bool:
-    """Короткие гендерные запросы вида 'нужны девочки' — до общего классификатора."""
+    """Запросы «нужна девочка» и их варианты — до общего классификатора."""
     normalized = " ".join((text or "").casefold().split())
-    # Только именительный и винительный: \w* ловил дательный ("нужны девочкам
-    # заколки", "нужны ребятам подарки") и удалял обычные сообщения.
-    who = r"(?:девочк(?:а|и|у)|девушк(?:а|и|у)|девуш(?:ек|ку)|женщин(?:а|ы|у)|парн(?:и|я|ей)|парень|мужчин(?:а|ы|у)|мальчик(?:и|а)?|ребят(?:а)?)"
-    return bool(re.search(rf"\b(?:нуж(?:ен|на|но|ны)|ищу|ищем|требуется|требуются|возьму)\s+{who}\b", normalized))
+    if GENDER_JOB_RE.search(normalized):
+        return True
+    return bool(REVERSE_JOB_RE.search(normalize_spaced(text)))
 
 
 def direct_child_job_fallback(text: str) -> bool:
