@@ -6,6 +6,7 @@ import time
 from collections import defaultdict, deque
 
 from aiogram import Bot, Dispatcher, Router
+from aiogram.enums import ChatMemberStatus, ChatType
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import Message
 from dotenv import load_dotenv
@@ -135,30 +136,71 @@ async def version_command(message: Message) -> None:
     await message.answer("🔧 " + "\n".join(lines))
 
 
+# Нормализованный текст может быть длиной почти во всё сообщение, а ответ
+# Telegram обязан уместиться в 4096 символов.
+CHECK_ECHO_LIMIT = 200
+
+ADMIN_STATUSES = {ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR}
+
+
+async def is_chat_admin(bot: Bot, message: Message) -> bool:
+    user = message.from_user
+    if user is None:
+        return False
+    try:
+        member = await bot.get_chat_member(message.chat.id, user.id)
+    except Exception:
+        logging.exception("get_chat_member failed chat=%s", message.chat.id)
+        return False
+    return member.status in ADMIN_STATUSES
+
+
+def format_check_reply(result: dict, fingerprint: str) -> str:
+    """Ответ /check.
+
+    Заблокированный текст обратно НЕ печатаем: сообщения бота модерацию не
+    проходят, поэтому эхо превратило бы диагностику в способ опубликовать
+    через бота то, что бот и должен удалять.
+    """
+    if result["reason"]:
+        lines = [
+            f"🗑 УДАЛИЛ БЫ — {result['label']}",
+            f"правило: {result['rule']}",
+            "текст не повторяю: он попадает под удаление",
+        ]
+    else:
+        normalized = result["normalized"] or "(пусто)"
+        if len(normalized) > CHECK_ECHO_LIMIT:
+            normalized = normalized[:CHECK_ECHO_LIMIT] + "…"
+        lines = ["✅ оставил бы", f"после нормализации: {normalized}"]
+    lines.append(f"версия правил: {fingerprint}")
+    return "\n".join(lines)
+
+
 @router.message(Command("check"))
-async def check_command(message: Message, command: CommandObject) -> None:
+async def check_command(message: Message, command: CommandObject, bot: Bot) -> None:
     """Спросить у ЗАПУЩЕННОГО бота, что он сделает с текстом.
 
     Отвечает на «почему это не удалилось» без логов и доступа к серверу:
     вердикт приходит от того самого кода, который сейчас работает.
+
+    В группе доступно только администраторам — иначе командой можно шуметь в
+    клиентском чате. В личке с ботом работает у всех.
     """
     await store_command(message)
+
+    if message.chat.type != ChatType.PRIVATE and not await is_chat_admin(bot, message):
+        return
+
     probe = (command.args or "").strip()
     if not probe:
         await message.answer("Напиши текст после команды: /check нужна девочка")
         return
 
-    result = explain_message(probe)
-    if result["reason"]:
-        verdict = f"🗑 УДАЛИЛ БЫ — {result['label']}"
-    else:
-        verdict = "✅ оставил бы"
-    await message.answer(
-        f"{verdict}\n"
-        f"правило: {result['rule'] or '—'}\n"
-        f"после нормализации: {result['normalized'] or '(пусто)'}\n"
-        f"версия правил: {ruleset_summary()['fingerprint']}"
-    )
+    # Ссылка может жить в entity, а не в тексте. Боевой путь её видит, поэтому
+    # и диагностика обязана — иначе она даст противоположный вердикт.
+    result = explain_message(probe, has_link=has_any_link(message, probe))
+    await message.answer(format_check_reply(result, ruleset_summary()["fingerprint"]))
 
 
 @router.message(Command("ping"))

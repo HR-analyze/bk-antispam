@@ -386,3 +386,49 @@ def test_explanation_for_a_clean_message():
 def test_classifier_failure_has_its_own_label():
     """Сбой классификатора виден в дашборде, а не прячется под «чистые»."""
     assert REASONS["error"] == "ошибка классификации"
+
+
+def test_check_reply_never_echoes_blocked_text():
+    """Сообщения бота модерацию не проходят.
+
+    Если /check повторяет заблокированный текст, командой можно опубликовать
+    через бота ровно то, что бот должен удалять.
+    """
+    from bot import format_check_reply
+    from moderation import explain_message
+
+    probe = "залетай смотреть голые фото красоток"
+    reply = format_check_reply(explain_message(probe), "abcd1234")
+
+    assert "УДАЛИЛ БЫ" in reply
+    # Поле с текстом не печатается вовсе, и ни одного слова пробы в ответе нет.
+    assert "после нормализации" not in reply
+    for word in ("залетай", "смотреть", "голые", "красоток"):
+        assert word not in reply, f"в ответе осталось {word!r}"
+    # Метка категории — не эхо: она описывает вердикт, а не текст.
+    assert "порнография/интим" in reply
+
+
+def test_check_reply_fits_telegram_limit():
+    """Ответ должен влезать в 4096 символов, иначе Telegram его отвергнет."""
+    from bot import CHECK_ECHO_LIMIT, format_check_reply
+    from moderation import explain_message
+
+    probe = "торт " * 900          # близко к пределу длины сообщения
+    reply = format_check_reply(explain_message(probe), "abcd1234")
+
+    assert len(reply) < 4096
+    assert "…" in reply
+    assert len(reply) < CHECK_ECHO_LIMIT + 200
+
+
+def test_check_sees_links_hidden_in_entities():
+    """Ссылка может жить в entity, а не в тексте.
+
+    Боевой путь передаёт has_link из entities; без этого диагностика дала бы
+    противоположный вердикт.
+    """
+    from moderation import explain_message
+
+    assert explain_message("смотрите тут")["reason"] is None
+    assert explain_message("смотрите тут", has_link=True)["reason"] == "link"
