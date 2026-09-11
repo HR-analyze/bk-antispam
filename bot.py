@@ -182,6 +182,14 @@ async def ping_command(message: Message) -> None:
 
 @router.message()
 async def moderate(message: Message, bot: Bot) -> None:
+    logging.info(
+        "MODERATION INPUT chat=%s message=%s type=%s text=%r",
+        message.chat.id,
+        message.message_id,
+        message.content_type,
+        message.text or message.caption or "",
+    )
+
     if not in_target_chat(message):
         return
 
