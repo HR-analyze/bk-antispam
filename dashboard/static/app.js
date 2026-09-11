@@ -13,6 +13,7 @@ const CLASS_LABELS = {
   fake_purchase: "фиктивная покупка",
   paid_task: "платная просьба",
   flood: "флуд/повтор",
+  error: "ошибка классификации",
 };
 
 const state = {

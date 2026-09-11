@@ -240,26 +240,35 @@ def _is_fake_purchase_spam(normalized: str, spaced: str) -> bool:
     if has_small_amount and has_purchase_context and signal_count >= 1: return True
     return False
 
-def classify(text: str):
+def classify_with_rule(text: str) -> tuple[str | None, str | None]:
+    """Вердикт и имя сработавшего правила.
+
+    Единственное место, где принимается решение по тексту: classify() и
+    explain_message() ходят сюда, чтобы объяснение не разъезжалось с реальным
+    поведением.
+    """
     normalized = normalize_text(text)
     spaced = normalize_spaced(text)
     raw = raw_spaced(text)
     plain = " ".join((text or "").casefold().split())
-    if _is_adult_spam(normalized, spaced, raw, plain): return "adult"
-    if _matches_any(normalized, PROFANITY_PATTERNS): return "profanity"
-    if any(normalize_spaced(phrase) in spaced for phrase in NEGATIVE_PHRASES): return "negative"
-    if _matches_any(normalized, SPAM_PATTERNS): return "spam"
+    if _is_adult_spam(normalized, spaced, raw, plain): return "adult", "adult"
+    if _matches_any(normalized, PROFANITY_PATTERNS): return "profanity", "profanity_patterns"
+    if any(normalize_spaced(phrase) in spaced for phrase in NEGATIVE_PHRASES): return "negative", "negative_phrases"
+    if _matches_any(normalized, SPAM_PATTERNS): return "spam", "spam_patterns"
     compact = compact_spaced(spaced)
-    if any(re.search(pattern, compact, re.I | re.U) for pattern in OBFUSCATED_JOB_PATTERNS): return "job_spam"
-    if any(normalize_spaced(phrase) in spaced for phrase in JOB_PHRASES): return "job_spam"
-    job_signal_count = _count_signals(spaced, JOB_SIGNALS)
-    if job_signal_count >= 2: return "job_spam"
-    if _is_short_job_message(spaced): return "job_spam"
-    if _weak_job_phrase_with_context(spaced, raw): return "job_spam"
-    if _is_fake_purchase_spam(normalized, spaced): return "fake_purchase"
-    if _is_task_request_spam(normalized, spaced): return "paid_task"
-    if _is_paid_task_spam(normalized, spaced, raw): return "paid_task"
-    return None
+    if any(re.search(pattern, compact, re.I | re.U) for pattern in OBFUSCATED_JOB_PATTERNS): return "job_spam", "obfuscated_job"
+    if any(normalize_spaced(phrase) in spaced for phrase in JOB_PHRASES): return "job_spam", "job_phrases"
+    if _count_signals(spaced, JOB_SIGNALS) >= 2: return "job_spam", "job_signals>=2"
+    if _is_short_job_message(spaced): return "job_spam", "short_job_message"
+    if _weak_job_phrase_with_context(spaced, raw): return "job_spam", "weak_job_phrase+context"
+    if _is_fake_purchase_spam(normalized, spaced): return "fake_purchase", "fake_purchase"
+    if _is_task_request_spam(normalized, spaced): return "paid_task", "task_request"
+    if _is_paid_task_spam(normalized, spaced, raw): return "paid_task", "paid_task"
+    return None, None
+
+
+def classify(text: str):
+    return classify_with_rule(text)[0]
 
 
 # --------------------------------------------------------------------------- решение по сообщению
@@ -276,6 +285,9 @@ REASONS = {
     "fake_purchase": "фиктивная покупка/доказательство оплаты",
     "paid_task": "платная просьба/бытовая подработка",
     "flood": "флуд/повтор",
+    # Классификатор упал на этом сообщении. Метка нужна, чтобы такое было видно
+    # в дашборде, а не пряталось под «чистые».
+    "error": "ошибка классификации",
 }
 
 
@@ -353,24 +365,42 @@ def direct_child_job_fallback(text: str) -> bool:
     )
 
 
-def classify_message(text: str, has_link: bool = False):
-    """Полное решение по одному сообщению. Возвращает ключ из REASONS или None.
+def decide(text: str, has_link: bool = False) -> tuple[str | None, str | None]:
+    """Полное решение по сообщению: вердикт и правило.
 
     Порядок важен: жёсткие правила идут до общего классификатора, иначе общая
     классификация перекрывает явные запросы о работе.
     """
     if has_link or contains_link(text):
-        return "link"
+        return "link", "link"
     variants = text_variants(text)
-    if any(direct_gender_job_fallback(v) or direct_child_job_fallback(v) for v in variants):
-        return "job_spam"
+    if any(direct_gender_job_fallback(v) for v in variants):
+        return "job_spam", "gender_fallback"
+    if any(direct_child_job_fallback(v) for v in variants):
+        return "job_spam", "child_fallback"
     for variant in variants:
-        reason = classify(variant)
+        reason, rule = classify_with_rule(variant)
         if reason is not None:
-            return reason
+            return reason, rule
     if any(spaced_job_fallback(v) for v in variants):
-        return "job_spam"
-    return None
+        return "job_spam", "spaced_job_fallback"
+    return None, None
+
+
+def classify_message(text: str, has_link: bool = False):
+    """Ключ из REASONS или None."""
+    return decide(text, has_link)[0]
+
+
+def explain_message(text: str, has_link: bool = False) -> dict:
+    """То же решение, но с объяснением — для /check и разбора жалоб."""
+    reason, rule = decide(text, has_link)
+    return {
+        "reason": reason,
+        "rule": rule,
+        "label": REASONS.get(reason) if reason else None,
+        "normalized": normalize_spaced(text),
+    }
 
 
 def _source_digest(paths) -> str:

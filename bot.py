@@ -6,12 +6,13 @@ import time
 from collections import defaultdict, deque
 
 from aiogram import Bot, Dispatcher, Router
-from aiogram.filters import Command, CommandStart
+from aiogram.enums import ChatMemberStatus, ChatType
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import Message
 from dotenv import load_dotenv
 
 from database import init_db, mark_moderation, save_message
-from moderation import REASONS, classify_message, contains_link, ruleset_summary
+from moderation import REASONS, contains_link, decide, explain_message, ruleset_summary
 
 load_dotenv()
 
@@ -135,6 +136,73 @@ async def version_command(message: Message) -> None:
     await message.answer("🔧 " + "\n".join(lines))
 
 
+# Нормализованный текст может быть длиной почти во всё сообщение, а ответ
+# Telegram обязан уместиться в 4096 символов.
+CHECK_ECHO_LIMIT = 200
+
+ADMIN_STATUSES = {ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR}
+
+
+async def is_chat_admin(bot: Bot, message: Message) -> bool:
+    user = message.from_user
+    if user is None:
+        return False
+    try:
+        member = await bot.get_chat_member(message.chat.id, user.id)
+    except Exception:
+        logging.exception("get_chat_member failed chat=%s", message.chat.id)
+        return False
+    return member.status in ADMIN_STATUSES
+
+
+def format_check_reply(result: dict, fingerprint: str) -> str:
+    """Ответ /check.
+
+    Заблокированный текст обратно НЕ печатаем: сообщения бота модерацию не
+    проходят, поэтому эхо превратило бы диагностику в способ опубликовать
+    через бота то, что бот и должен удалять.
+    """
+    if result["reason"]:
+        lines = [
+            f"🗑 УДАЛИЛ БЫ — {result['label']}",
+            f"правило: {result['rule']}",
+            "текст не повторяю: он попадает под удаление",
+        ]
+    else:
+        normalized = result["normalized"] or "(пусто)"
+        if len(normalized) > CHECK_ECHO_LIMIT:
+            normalized = normalized[:CHECK_ECHO_LIMIT] + "…"
+        lines = ["✅ оставил бы", f"после нормализации: {normalized}"]
+    lines.append(f"версия правил: {fingerprint}")
+    return "\n".join(lines)
+
+
+@router.message(Command("check"))
+async def check_command(message: Message, command: CommandObject, bot: Bot) -> None:
+    """Спросить у ЗАПУЩЕННОГО бота, что он сделает с текстом.
+
+    Отвечает на «почему это не удалилось» без логов и доступа к серверу:
+    вердикт приходит от того самого кода, который сейчас работает.
+
+    В группе доступно только администраторам — иначе командой можно шуметь в
+    клиентском чате. В личке с ботом работает у всех.
+    """
+    await store_command(message)
+
+    if message.chat.type != ChatType.PRIVATE and not await is_chat_admin(bot, message):
+        return
+
+    probe = (command.args or "").strip()
+    if not probe:
+        await message.answer("Напиши текст после команды: /check нужна девочка")
+        return
+
+    # Ссылка может жить в entity, а не в тексте. Боевой путь её видит, поэтому
+    # и диагностика обязана — иначе она даст противоположный вердикт.
+    result = explain_message(probe, has_link=has_any_link(message, probe))
+    await message.answer(format_check_reply(result, ruleset_summary()["fingerprint"]))
+
+
 @router.message(Command("ping"))
 async def ping_command(message: Message) -> None:
     await store_command(message)
@@ -167,19 +235,35 @@ async def moderate(message: Message, bot: Bot) -> None:
 
     await save_message(message, text)
 
-    reason = classify_message(text, has_link=has_any_link(message, text))
+    # Падение здесь раньше уносило весь обработчик: mark_moderation не
+    # вызывался, сообщение оставалось в чате, а в дашборде выглядело «чистым».
+    # Теперь сбой виден и в логах, и в дашборде.
+    try:
+        reason, rule = decide(text, has_link=has_any_link(message, text))
+    except Exception:
+        logging.exception(
+            "CLASSIFY FAILED chat=%s message=%s text=%r",
+            message.chat.id,
+            message.message_id,
+            text,
+        )
+        await mark_moderation(
+            message, classification="error", deleted=False, reason=REASONS["error"]
+        )
+        return
 
     # Правка — не флуд: считать её повтором нельзя, иначе автор, поправивший
     # опечатку, получает метку флуда.
     if reason is None and not edited and is_flood(message, text):
-        reason = "flood"
+        reason, rule = "flood", "flood"
 
     logging.info(
-        "CLASSIFY chat=%s message=%s edited=%s reason=%s text=%r",
+        "CLASSIFY chat=%s message=%s edited=%s reason=%s rule=%s text=%r",
         message.chat.id,
         message.message_id,
         edited,
         reason,
+        rule,
         text,
     )
 
