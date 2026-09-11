@@ -79,6 +79,37 @@ PAID_TASK_SIGNALS = (
     "в сутки", "плачу", "оплачу", "оплата", "выплата",
 )
 
+# Unpaid/help requests are also treated as job/task spam in this chat.
+# The goal is to remove any public call for a person to perform a task,
+# including indirect wording such as "кто-нибудь знает, кто может помочь...".
+TASK_REQUEST_PHRASES = {
+    "кто сможет помочь", "кто-нибудь сможет помочь", "кто нибудь сможет помочь",
+    "кто может помочь", "кто-нибудь может помочь", "кто нибудь может помочь",
+    "кто может помочь с", "кто-нибудь может помочь с", "кто нибудь может помочь с",
+    "кто сможет помочь с", "кто-нибудь сможет помочь с", "кто нибудь сможет помочь с",
+    "кто-нибудь знает, кто может помочь", "кто нибудь знает кто может помочь",
+    "кто-нибудь знает кто может помочь", "кто нибудь знает, кто может помочь",
+    "кто знает кто может помочь", "кто знает, кто может помочь",
+    "кто знает кто сможет помочь", "кто знает, кто сможет помочь",
+    "есть кто сможет помочь", "есть кто может помочь", "есть кто поможет",
+    "нужен человек помочь", "нужна помощь с", "ищу человека для помощи",
+    "ищу человека помочь", "ищу кто поможет", "нужен кто поможет",
+    "кто поможет с переездом", "кто может помочь с переездом", "кто сможет помочь с переездом",
+    "кто поможет перевезти", "кто может перевезти", "кто сможет перевезти",
+}
+
+TASK_REQUEST_SIGNALS = (
+    "кто сможет", "кто может", "кто-нибудь", "кто нибудь", "кто-нибудь знает",
+    "кто нибудь знает", "кто знает", "есть кто", "нужен человек", "нужна помощь",
+    "ищу человека", "ищу кто", "кто поможет", "кто сможет помочь", "кто может помочь",
+)
+
+TASK_ACTION_SIGNALS = (
+    "помочь", "помощь", "поможет", "переезд", "перевезти", "перенести", "донести",
+    "забрать", "отвезти", "привезти", "присмотреть", "посидеть", "выгул", "погулять",
+    "убрать", "починить", "сделать", "собрать", "разобрать", "подменить", "присмотреть за",
+)
+
 PAID_AMOUNT_RE = re.compile(
     r"\b\d{2,6}\s*(?:₽|р\.?|руб(?:лей|ля)?\b)",
     re.IGNORECASE | re.UNICODE,
@@ -143,6 +174,23 @@ def _matches_any(text: str, patterns) -> bool:
     return any(re.search(pattern, text, flags=re.IGNORECASE | re.UNICODE) for pattern in patterns)
 
 
+def _is_task_request_spam(normalized: str, spaced: str) -> bool:
+    if any(normalize_spaced(phrase) in spaced for phrase in TASK_REQUEST_PHRASES):
+        return True
+
+    request_count = sum(1 for signal in TASK_REQUEST_SIGNALS if normalize_spaced(signal) in spaced)
+    action_count = sum(1 for signal in TASK_ACTION_SIGNALS if normalize_spaced(signal) in spaced)
+    has_task_target = any(token in normalized for token in ("переезд", "попуга", "собак", "кошк", "шкаф", "вещ", "машин", "квартир"))
+
+    # Direct public requests for someone to perform an action are spam even
+    # without payment: "кто может помочь с переездом?".
+    if request_count >= 1 and action_count >= 1:
+        return True
+    if request_count >= 1 and has_task_target:
+        return True
+    return False
+
+
 def _is_paid_task_spam(normalized: str, spaced: str) -> bool:
     has_amount = bool(PAID_AMOUNT_RE.search(spaced))
     task_signal_count = sum(1 for signal in PAID_TASK_SIGNALS if normalize_spaced(signal) in spaced)
@@ -150,8 +198,6 @@ def _is_paid_task_spam(normalized: str, spaced: str) -> bool:
     has_time = any(token in normalized for token in ("завтра", "сегодня", "час", "дня", "день", "сутки", "постоянн"))
     has_work_word = any(token in normalized for token in ("работ", "подработ", "присмотр", "помощ", "помочь", "сделать", "посидет"))
 
-    # Examples: "5 человек на под работку, 4000 за 3 часа" and
-    # "нужен человек присмотреть за попугаем, плачу 5100 в день".
     if has_amount and task_signal_count >= 1:
         return True
     if has_amount and has_people and has_time and has_work_word:
@@ -193,6 +239,9 @@ def classify(text: str):
 
     if _is_fake_purchase_spam(normalized, spaced):
         return "fake_purchase_spam"
+
+    if _is_task_request_spam(normalized, spaced):
+        return "job_spam"
 
     if _is_paid_task_spam(normalized, spaced):
         return "job_spam"
