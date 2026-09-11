@@ -69,6 +69,40 @@ OBFUSCATED_JOB_PATTERNS = (
     r"\bп[оo]д[рr][аa]б[оo]тк\w*\b",
 )
 
+# Manipulative requests for a fake/symbolic purchase, payment, receipt or
+# proof of cooperation. These are intentionally combination-based so a normal
+# message such as "купить продукты" is not removed.
+FAKE_PURCHASE_PHRASES = {
+    "купите у меня рекламу", "купить у меня рекламу", "закажите у меня рекламу",
+    "купите у меня хоть", "купить у меня хоть", "сделайте заказ для отчета",
+    "сделайте заказ для отчёта", "заказ ради отчета", "заказ ради отчёта",
+    "покупка ради отчета", "покупка ради отчёта", "для доказательства покупки",
+    "доказательство покупки", "подтвердить покупку", "подтвердите покупку",
+    "доказательство оплаты", "подтвердить оплату", "подтвердите оплату",
+    "скрин оплаты", "скрин оплаты", "скрин покупки", "скрин покупки",
+    "чек для отчета", "чек для отчёта", "чек для доказательства",
+    "я написал что вы купили", "я написал, что вы купили",
+    "я написал что вы у меня купили", "я написал, что вы у меня купили",
+    "написал у себя что вы купили", "написал у себя, что вы купили",
+    "можете подтвердить что покупали", "можете подтвердить, что покупали",
+    "можете подтвердить что покупали у меня", "можете подтвердить, что покупали у меня",
+}
+
+FAKE_PURCHASE_SIGNALS = (
+    "купите у меня", "купить у меня", "закажите у меня", "реклам", "покупк",
+    "заказ", "оплат", "чек", "скрин", "доказательств", "подтверд", "подтвержден",
+    "для отчета", "для отчёта", "для кейса", "для портфолио", "для статистики",
+    "для клиента", "я написал у себя", "я написала у себя", "в моем тгк",
+    "в моём тгк", "в моем канале", "в моём канале", "посмотрите мой тгк",
+    "посмотрите мой канал", "выручите", "хоть 10", "хоть 10р", "хоть 10 руб",
+    "хоть 10 рублей", "хоть рубль", "символическую сумму",
+)
+
+FAKE_PURCHASE_AMOUNT_RE = re.compile(
+    r"(?:хоть\s*)?(?:\d{1,3}\s*(?:₽|р\.?|руб(?:лей|ля)?\b)|руб(?:ль|ля|лей)\b)",
+    re.IGNORECASE | re.UNICODE,
+)
+
 
 def normalize_text(text: str) -> str:
     text = unicodedata.normalize("NFKC", text or "").casefold()
@@ -98,6 +132,34 @@ def _matches_any(text: str, patterns) -> bool:
     return any(re.search(pattern, text, flags=re.IGNORECASE | re.UNICODE) for pattern in patterns)
 
 
+def _is_fake_purchase_spam(normalized: str, spaced: str) -> bool:
+    """Detect requests to create a fake/symbolic purchase or proof of payment."""
+    if any(normalize_spaced(phrase) in spaced for phrase in FAKE_PURCHASE_PHRASES):
+        return True
+
+    signal_count = sum(1 for signal in FAKE_PURCHASE_SIGNALS if normalize_spaced(signal) in spaced)
+    has_small_amount = bool(FAKE_PURCHASE_AMOUNT_RE.search(spaced))
+    has_purchase_context = any(
+        token in normalized
+        for token in ("куп", "заказ", "реклам", "оплат", "покупк")
+    )
+    has_proof_context = any(
+        token in normalized
+        for token in ("доказ", "подтверд", "скрин", "чек", "отчет", "отчёт", "кейса", "портфолио")
+    )
+
+    # Strong combination: purchase/payment + proof/report, optionally with a
+    # tiny amount or emotional/Telegram-channel bait.
+    if has_purchase_context and has_proof_context:
+        return True
+    if has_small_amount and signal_count >= 2:
+        return True
+    if has_small_amount and has_purchase_context and signal_count >= 1:
+        return True
+
+    return False
+
+
 def classify(text: str):
     normalized = normalize_text(text)
     spaced = normalize_spaced(text)
@@ -111,6 +173,9 @@ def classify(text: str):
 
     if _matches_any(normalized, SPAM_PATTERNS):
         return "spam"
+
+    if _is_fake_purchase_spam(normalized, spaced):
+        return "fake_purchase_spam"
 
     for phrase in JOB_PHRASES:
         if normalize_spaced(phrase) in spaced:
