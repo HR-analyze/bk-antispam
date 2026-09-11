@@ -125,7 +125,20 @@ async def ping_command(message: Message) -> None:
 @router.message()
 @router.edited_message()
 async def moderate(message: Message, bot: Bot) -> None:
+    # Пишется ДО проверки чата: если сюда ничего не приходит — бот не видит
+    # апдейтов; если приходит, а CLASSIFY ниже нет — не совпал CHAT_ID.
+    logging.info(
+        "MODERATION INPUT chat=%s message=%s type=%s text=%r",
+        message.chat.id,
+        message.message_id,
+        message.content_type,
+        message.text or message.caption or "",
+    )
+
     if not in_target_chat(message):
+        logging.info(
+            "SKIPPED: chat=%s не совпал с CHAT_ID=%s", message.chat.id, CHAT_ID
+        )
         return
 
     text = message.text or message.caption or ""
