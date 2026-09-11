@@ -2,6 +2,7 @@ import os
 from typing import Optional
 
 import psycopg
+import runtime
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from psycopg.rows import dict_row
@@ -84,7 +85,14 @@ async def fetch_one(query: str, params: tuple = ()):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "database_configured": bool(DATABASE_URL), "api_key_configured": bool(DASHBOARD_API_KEY)}
+    return {
+        "status": "ok",
+        "database_configured": bool(DATABASE_URL),
+        "api_key_configured": bool(DASHBOARD_API_KEY),
+        # false => Telegram никто не слушает; bot_state говорит почему
+        "bot_running": runtime.bot_is_polling(),
+        "bot_state": runtime.bot_state(),
+    }
 
 
 @app.get("/api/stats")
