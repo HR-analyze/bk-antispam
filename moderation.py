@@ -77,12 +77,7 @@ PAID_TASK_SIGNALS = (
     "в сутки", "плачу", "оплачу", "оплата", "выплата",
 )
 
-# Amounts can be written without a currency symbol: "4000 за 3 часа",
-# "5100 в день", "500 за час".
-PAID_AMOUNT_RE = re.compile(
-    r"\b\d{2,6}\s*(?:₽|р\.?|руб(?:лей|ля)?\b)",
-    re.IGNORECASE | re.UNICODE,
-)
+PAID_AMOUNT_RE = re.compile(r"\b\d{2,6}\s*(?:₽|р\.?|руб(?:лей|ля)?\b)", re.IGNORECASE | re.UNICODE)
 BARE_AMOUNT_RE = re.compile(r"\b\d{2,6}\b")
 
 TASK_REQUEST_PHRASES = {
@@ -162,6 +157,16 @@ def normalize_spaced(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def raw_spaced(text: str) -> str:
+    text = unicodedata.normalize("NFKC", text or "").casefold()
+    text = re.sub(r"[^а-яёa-z0-9₽@]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def compact_spaced(text: str) -> str:
+    return re.sub(r"\s+", "", text)
+
+
 def contains_link(text: str) -> bool:
     if not text:
         return False
@@ -175,11 +180,9 @@ def _matches_any(text: str, patterns) -> bool:
 def _is_task_request_spam(normalized: str, spaced: str) -> bool:
     if any(normalize_spaced(phrase) in spaced for phrase in TASK_REQUEST_PHRASES):
         return True
-
     request_count = sum(1 for signal in TASK_REQUEST_SIGNALS if normalize_spaced(signal) in spaced)
     action_count = sum(1 for signal in TASK_ACTION_SIGNALS if normalize_spaced(signal) in spaced)
     has_task_target = any(token in normalized for token in ("переезд", "попуга", "собак", "кошк", "шкаф", "вещ", "машин", "квартир"))
-
     if request_count >= 1 and action_count >= 1:
         return True
     if request_count >= 1 and has_task_target:
@@ -187,25 +190,26 @@ def _is_task_request_spam(normalized: str, spaced: str) -> bool:
     return False
 
 
-def _is_paid_task_spam(normalized: str, spaced: str) -> bool:
-    has_currency_amount = bool(PAID_AMOUNT_RE.search(spaced))
+def _is_paid_task_spam(normalized: str, spaced: str, raw: str) -> bool:
+    has_currency_amount = bool(PAID_AMOUNT_RE.search(raw))
     task_signal_count = sum(1 for signal in PAID_TASK_SIGNALS if normalize_spaced(signal) in spaced)
     has_people = any(token in normalized for token in ("человек", "людей", "кто", "ребят", "парень", "девуш"))
     has_time = any(token in normalized for token in ("завтра", "сегодня", "час", "дня", "день", "сутки", "постоянн"))
     has_work_word = any(token in normalized for token in ("работ", "подработ", "присмотр", "помощ", "помочь", "сделать", "посидет"))
-
-    # Important: many users omit the currency symbol: "4000 за 3 часа".
-    # Treat a bare amount as payment when it appears with a payment/time context.
-    bare_amounts = [int(value) for value in BARE_AMOUNT_RE.findall(spaced) if int(value) >= 100]
+    bare_amounts = [int(value) for value in BARE_AMOUNT_RE.findall(raw) if int(value) >= 100]
     has_bare_amount = bool(bare_amounts)
-    has_payment_context = any(token in normalized for token in ("плачу", "оплачу", "оплата", "выплата", "за час", "за часа", "за день", "в день", "в сутки"))
-    has_duration = bool(re.search(r"\b\d{1,3}\s*(?:час(?:а|ов)?|дн(?:я|ей)?|сут(?:ки|ок)?)\b", spaced))
-
-    if (has_currency_amount or (has_bare_amount and (has_payment_context or has_duration))) and task_signal_count >= 1:
+    has_payment_context = any(token in raw for token in ("плачу", "оплачу", "оплата", "выплата", "за час", "за часа", "за день", "в день", "в сутки"))
+    has_duration = bool(re.search(r"\b\d{1,3}\s*(?:час(?:а|ов)?|дн(?:я|ей)?|сут(?:ки|ок)?)\b", raw))
+    # Compact form catches deliberate spacing: "подрабо тку", "под работку", etc.
+    compact = compact_spaced(spaced)
+    has_obfuscated_work = any(re.search(pattern, compact, re.IGNORECASE | re.UNICODE) for pattern in (
+        r"подработ\w*", r"подработ\w*", r"шабаш\w*", r"ваканс\w*"
+    ))
+    if (has_currency_amount or (has_bare_amount and (has_payment_context or has_duration))) and (task_signal_count >= 1 or has_obfuscated_work):
         return True
     if has_currency_amount and has_people and has_time and has_work_word:
         return True
-    if has_bare_amount and has_people and has_time and has_work_word:
+    if has_bare_amount and has_people and has_time and (has_work_word or has_obfuscated_work):
         return True
     return False
 
@@ -213,12 +217,10 @@ def _is_paid_task_spam(normalized: str, spaced: str) -> bool:
 def _is_fake_purchase_spam(normalized: str, spaced: str) -> bool:
     if any(normalize_spaced(phrase) in spaced for phrase in FAKE_PURCHASE_PHRASES):
         return True
-
     signal_count = sum(1 for signal in FAKE_PURCHASE_SIGNALS if normalize_spaced(signal) in spaced)
     has_small_amount = bool(FAKE_PURCHASE_AMOUNT_RE.search(spaced))
     has_purchase_context = any(token in normalized for token in ("куп", "заказ", "реклам", "оплат", "покупк"))
     has_proof_context = any(token in normalized for token in ("доказ", "подтверд", "скрин", "чек", "отчет", "отчёт", "кейса", "портфолио"))
-
     if has_purchase_context and has_proof_context:
         return True
     if has_small_amount and signal_count >= 2:
@@ -231,35 +233,26 @@ def _is_fake_purchase_spam(normalized: str, spaced: str) -> bool:
 def classify(text: str):
     normalized = normalize_text(text)
     spaced = normalize_spaced(text)
-
+    raw = raw_spaced(text)
     if _matches_any(normalized, PROFANITY_PATTERNS):
         return "profanity"
-
     for phrase in NEGATIVE_PHRASES:
         if normalize_spaced(phrase) in spaced:
             return "negative"
-
     if _matches_any(normalized, SPAM_PATTERNS):
         return "spam"
-
     if _is_fake_purchase_spam(normalized, spaced):
         return "fake_purchase_spam"
-
     if _is_task_request_spam(normalized, spaced):
         return "job_spam"
-
-    if _is_paid_task_spam(normalized, spaced):
+    if _is_paid_task_spam(normalized, spaced, raw):
         return "job_spam"
-
-    for phrase in JOB_PHRASES:
-        if normalize_spaced(phrase) in spaced:
-            return "job_spam"
-
-    job_signal_count = sum(1 for signal in JOB_SIGNALS if normalize_text(signal) in normalized)
+    compact = compact_spaced(spaced)
+    if any(normalize_spaced(phrase) in spaced or normalize_spaced(phrase).replace(" ", "") in compact for phrase in JOB_PHRASES):
+        return "job_spam"
+    job_signal_count = sum(1 for signal in JOB_SIGNALS if normalize_text(signal) in normalized or normalize_text(signal).replace(" ", "") in compact)
     if job_signal_count >= 2:
         return "job_spam"
-
-    if _matches_any(spaced, OBFUSCATED_JOB_PATTERNS):
+    if _matches_any(spaced, OBFUSCATED_JOB_PATTERNS) or re.search(r"подработ\w*|шабаш\w*|ваканс\w*", compact, re.IGNORECASE):
         return "job_spam"
-
     return None
