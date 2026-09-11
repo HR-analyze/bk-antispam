@@ -1,5 +1,7 @@
+import hashlib
 import re
 import unicodedata
+from pathlib import Path
 
 # NOTE: anti-spam rules are intentionally aggressive for the BK work chat.
 
@@ -262,3 +264,41 @@ def classify_message(text: str, has_link: bool = False):
     if any(spaced_job_fallback(v) for v in variants):
         return "job_spam"
     return None
+
+
+def _source_digest(paths) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(paths):
+        try:
+            digest.update(path.read_bytes())
+        except OSError:
+            return ""
+    return digest.hexdigest()[:8]
+
+
+def ruleset_fingerprint() -> str:
+    """Хеш исходников модерации — и правил, и логики.
+
+    Раньше хешировался вручную выбранный набор словарей. Из-за этого правка
+    TASK_ACTION_SIGNALS, регулярок или самой classify() меняла поведение, не
+    меняя ответ /version: диагностика деплоя могла соврать. Теперь берутся
+    файлы целиком, поэтому любое изменение поведения меняет и хеш.
+
+    bot.py включён: там живут пороги флуда и разбор ссылок из entities.
+    """
+    here = Path(__file__).resolve()
+    return _source_digest((here, here.parent / "bot.py")) or "unknown"
+
+
+def ruleset_summary() -> dict:
+    """Что показать в /version, чтобы отличить одну сборку от другой.
+
+    Счётчики — для человека; отличает сборки именно хеш.
+    """
+    return {
+        "fingerprint": ruleset_fingerprint(),
+        "job_phrases": len(JOB_PHRASES),
+        "weak_job_phrases": len(WEAK_JOB_PHRASES),
+        "profanity_patterns": len(PROFANITY_PATTERNS),
+        "categories": len(REASONS),
+    }
