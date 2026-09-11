@@ -136,6 +136,19 @@ def direct_gender_job_fallback(text: str) -> bool:
     )
 
 
+def direct_child_job_fallback(text: str) -> bool:
+    """Catch explicit requests for children/minors as workers without blocking ordinary child-related text."""
+    normalized = " ".join((text or "").casefold().split())
+    child = r"(?:дет(?:и|ей|ям|ьми|ях)?|реб[её]нок|ребят|подрост(?:ок|ка|ки|ков)?|школьник\w*)"
+    request = r"(?:нуж(?:ен|на|ны)|ищ(?:у|ем)|требу(?:ется|ются)|ищем|возьм(?:у|ём)|ищется)"
+    work_context = r"(?:на\s+работу|для\s+работы|на\s+подработку|для\s+подработки|работать|подработать|на\s+съёмку|для\s+съёмки|на\s+съемку|для\s+съемки)"
+    return bool(
+        re.search(rf"\b{request}\s+{child}(?:\s+{work_context})?\b", normalized)
+        or re.search(rf"\b{request}\s+{child}\s+{work_context}\b", normalized)
+        or re.search(rf"\b{child}\s+{work_context}\b", normalized)
+    )
+
+
 async def store_command(message: Message) -> None:
     if in_target_chat(message):
         await save_message(message, message.text or message.caption or "")
@@ -178,6 +191,14 @@ async def moderate(message: Message, bot: Bot) -> None:
             reason = "job_spam"
             logging.info(
                 "Gender-job fallback matched chat=%s message=%s text=%r",
+                message.chat.id,
+                message.message_id,
+                text,
+            )
+        elif reason is None and direct_child_job_fallback(classification_text):
+            reason = "job_spam"
+            logging.info(
+                "Child-job fallback matched chat=%s message=%s text=%r",
                 message.chat.id,
                 message.message_id,
                 text,
