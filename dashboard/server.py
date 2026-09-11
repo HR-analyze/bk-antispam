@@ -100,9 +100,29 @@ CLEAN = "clean"
 # message_date comes from Telegram and may be missing; created_at always exists.
 TS = "COALESCE(message_date, created_at)"
 
-MESSAGE_COLUMNS = """
+# За время расхождения меток классификатор писал в БД русские строки. Дашборд
+# группирует и фильтрует по нормализованному значению, иначе старые и новые
+# записи выглядят как две одинаково подписанные категории с разбитыми счётчиками.
+LEGACY_CLASSIFICATIONS = {
+    "мат": "profanity",
+    "негатив": "negative",
+    "спам": "spam",
+    "подработка": "job_spam",
+    "фейковая покупка": "fake_purchase",
+    "платная помощь": "paid_task",
+}
+
+NORM_CLASSIFICATION = (
+    "CASE classification "
+    + " ".join(f"WHEN '{ru}' THEN '{en}'" for ru, en in LEGACY_CLASSIFICATIONS.items())
+    + f" ELSE COALESCE(classification, '{CLEAN}') END"
+)
+
+
+MESSAGE_COLUMNS = f"""
     id, chat_id, message_id, user_id, username, first_name, last_name,
-    text, message_date, reply_to_message_id, classification, deleted,
+    text, message_date, reply_to_message_id,
+    {NORM_CLASSIFICATION} AS classification, deleted,
     delete_reason, created_at
 """
 
@@ -168,12 +188,12 @@ class DatabaseSource(Source):
         params: list = []
         where = self._window(days, params)
         return await self._fetch(f"""
-            SELECT COALESCE(classification, '{CLEAN}') AS classification,
+            SELECT {NORM_CLASSIFICATION} AS classification,
                    COUNT(*)::bigint AS count,
                    COUNT(*) FILTER (WHERE deleted)::bigint AS deleted_count
             FROM public.messages
             {where}
-            GROUP BY COALESCE(classification, '{CLEAN}')
+            GROUP BY {NORM_CLASSIFICATION}
             ORDER BY count DESC
         """, tuple(params))
 
@@ -208,10 +228,9 @@ class DatabaseSource(Source):
     def _filters(classification, deleted, user_id, q, days) -> tuple[str, list]:
         conditions: list[str] = []
         params: list = []
-        if classification == CLEAN:
-            conditions.append("classification IS NULL")
-        elif classification:
-            conditions.append("classification = %s")
+        if classification:
+            # Нормализованное значение покрывает и NULL ('clean'), и легаси-метки.
+            conditions.append(f"{NORM_CLASSIFICATION} = %s")
             params.append(classification)
         if deleted is not None:
             conditions.append("deleted = %s")
