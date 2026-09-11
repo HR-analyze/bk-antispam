@@ -6,12 +6,12 @@ import time
 from collections import defaultdict, deque
 
 from aiogram import Bot, Dispatcher, Router
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import Message
 from dotenv import load_dotenv
 
 from database import init_db, mark_moderation, save_message
-from moderation import REASONS, classify_message, contains_link, ruleset_summary
+from moderation import REASONS, contains_link, decide, explain_message, ruleset_summary
 
 load_dotenv()
 
@@ -135,6 +135,32 @@ async def version_command(message: Message) -> None:
     await message.answer("🔧 " + "\n".join(lines))
 
 
+@router.message(Command("check"))
+async def check_command(message: Message, command: CommandObject) -> None:
+    """Спросить у ЗАПУЩЕННОГО бота, что он сделает с текстом.
+
+    Отвечает на «почему это не удалилось» без логов и доступа к серверу:
+    вердикт приходит от того самого кода, который сейчас работает.
+    """
+    await store_command(message)
+    probe = (command.args or "").strip()
+    if not probe:
+        await message.answer("Напиши текст после команды: /check нужна девочка")
+        return
+
+    result = explain_message(probe)
+    if result["reason"]:
+        verdict = f"🗑 УДАЛИЛ БЫ — {result['label']}"
+    else:
+        verdict = "✅ оставил бы"
+    await message.answer(
+        f"{verdict}\n"
+        f"правило: {result['rule'] or '—'}\n"
+        f"после нормализации: {result['normalized'] or '(пусто)'}\n"
+        f"версия правил: {ruleset_summary()['fingerprint']}"
+    )
+
+
 @router.message(Command("ping"))
 async def ping_command(message: Message) -> None:
     await store_command(message)
@@ -167,19 +193,35 @@ async def moderate(message: Message, bot: Bot) -> None:
 
     await save_message(message, text)
 
-    reason = classify_message(text, has_link=has_any_link(message, text))
+    # Падение здесь раньше уносило весь обработчик: mark_moderation не
+    # вызывался, сообщение оставалось в чате, а в дашборде выглядело «чистым».
+    # Теперь сбой виден и в логах, и в дашборде.
+    try:
+        reason, rule = decide(text, has_link=has_any_link(message, text))
+    except Exception:
+        logging.exception(
+            "CLASSIFY FAILED chat=%s message=%s text=%r",
+            message.chat.id,
+            message.message_id,
+            text,
+        )
+        await mark_moderation(
+            message, classification="error", deleted=False, reason=REASONS["error"]
+        )
+        return
 
     # Правка — не флуд: считать её повтором нельзя, иначе автор, поправивший
     # опечатку, получает метку флуда.
     if reason is None and not edited and is_flood(message, text):
-        reason = "flood"
+        reason, rule = "flood", "flood"
 
     logging.info(
-        "CLASSIFY chat=%s message=%s edited=%s reason=%s text=%r",
+        "CLASSIFY chat=%s message=%s edited=%s reason=%s rule=%s text=%r",
         message.chat.id,
         message.message_id,
         edited,
         reason,
+        rule,
         text,
     )
 

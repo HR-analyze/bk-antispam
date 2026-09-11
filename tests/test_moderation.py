@@ -360,3 +360,29 @@ def test_source_digest_tracks_bytes_and_survives_missing_files(tmp_path):
     assert _source_digest((first, second)) != before
 
     assert _source_digest((first, tmp_path / "missing.py")) == ""
+
+
+@pytest.mark.parametrize("text,expected", SPAM_CASES)
+def test_explanation_agrees_with_the_verdict(text, expected):
+    """/check не должен расходиться с тем, что бот реально делает."""
+    from moderation import explain_message
+
+    result = explain_message(text)
+    assert result["reason"] == expected
+    assert result["rule"], f"правило не названо для {text!r}"
+    assert result["label"] == REASONS[expected]
+
+
+def test_explanation_for_a_clean_message():
+    from moderation import explain_message
+
+    result = explain_message("девочки, подскажите рецепт")
+    assert result["reason"] is None
+    assert result["rule"] is None
+    assert result["label"] is None
+    assert result["normalized"] == "девочки подскажите рецепт"
+
+
+def test_classifier_failure_has_its_own_label():
+    """Сбой классификатора виден в дашборде, а не прячется под «чистые»."""
+    assert REASONS["error"] == "ошибка классификации"
