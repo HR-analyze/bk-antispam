@@ -125,6 +125,17 @@ def spaced_job_fallback(text: str) -> bool:
     )
 
 
+def direct_gender_job_fallback(text: str) -> bool:
+    """Catch short job requests such as 'Нужны девочки' even without extra context."""
+    normalized = " ".join((text or "").casefold().split())
+    return bool(
+        re.search(r"\bнужн(?:ы|а)\s+девочк\w*\b", normalized)
+        or re.search(r"\bнужн(?:ы|а)\s+девуш\w*\b", normalized)
+        or re.search(r"\b(?:ищу|требуется|требуются)\s+девочк\w*\b", normalized)
+        or re.search(r"\b(?:ищу|требуется|требуются)\s+девуш\w*\b", normalized)
+    )
+
+
 async def store_command(message: Message) -> None:
     if in_target_chat(message):
         await save_message(message, message.text or message.caption or "")
@@ -155,8 +166,6 @@ async def moderate(message: Message, bot: Bot) -> None:
 
     text = message.text or message.caption or ""
 
-    # Save every incoming message before moderation. Even messages that are
-    # subsequently deleted remain available for analytics and training.
     await save_message(message, text)
 
     classification_text = profanity_variants(text)
@@ -165,9 +174,25 @@ async def moderate(message: Message, bot: Bot) -> None:
         reason = "link"
     else:
         reason = classify(classification_text)
-        if reason is None and spaced_job_fallback(classification_text):
+        if reason is None and direct_gender_job_fallback(classification_text):
+            reason = "job_spam"
+            logging.info(
+                "Gender-job fallback matched chat=%s message=%s text=%r",
+                message.chat.id,
+                message.message_id,
+                text,
+            )
+        elif reason is None and spaced_job_fallback(classification_text):
             reason = "job_spam"
             logging.info("Spaced-job fallback matched chat=%s message=%s", message.chat.id, message.message_id)
+
+    logging.info(
+        "CLASSIFY chat=%s message=%s reason=%s text=%r",
+        message.chat.id,
+        message.message_id,
+        reason,
+        text,
+    )
 
     if reason is None and is_flood(message, text):
         reason = "flood"
