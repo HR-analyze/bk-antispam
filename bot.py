@@ -227,6 +227,19 @@ async def main() -> None:
     dp.include_router(router)
 
     me = await bot.get_me()
+    # Версия правил печатается при каждом старте: `docker logs <контейнер> | head`
+    # сразу показывает, какая сборка поднялась, без захода в чат за /version.
+    rules = ruleset_summary()
+    build = os.getenv("BUILD_SHA", "").strip()
+    logging.info(
+        "Правила модерации: %s | фраз о работе %s (+%s слабых) | шаблонов мата %s | категорий %s%s",
+        rules["fingerprint"],
+        rules["job_phrases"],
+        rules["weak_job_phrases"],
+        rules["profanity_patterns"],
+        rules["categories"],
+        f" | сборка {build}" if build else "",
+    )
     logging.info("Bot started: @%s (%s) CHAT_ID=%s", me.username, me.id, CHAT_ID)
     await dp.start_polling(
         bot,
