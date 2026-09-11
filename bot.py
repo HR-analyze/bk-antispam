@@ -2,7 +2,6 @@ import asyncio
 import hashlib
 import logging
 import os
-import re
 import time
 from collections import defaultdict, deque
 
@@ -12,7 +11,7 @@ from aiogram.types import Message
 from dotenv import load_dotenv
 
 from database import init_db, mark_moderation, save_message
-from moderation import classify, contains_link
+from moderation import REASONS, classify_message, contains_link
 
 load_dotenv()
 
@@ -34,15 +33,6 @@ logging.basicConfig(
 
 router = Router()
 
-REASONS = {
-    "link": "ссылка",
-    "profanity": "мат",
-    "negative": "негатив",
-    "spam": "спам/реклама",
-    "job_spam": "предложение работы/подработки",
-    "fake_purchase_spam": "фиктивная покупка/доказательство оплаты",
-    "flood": "флуд/повтор",
-}
 
 WINDOW_SECONDS = 60
 MAX_TIMESTAMPS_PER_USER = 20
@@ -107,56 +97,6 @@ def in_target_chat(message: Message) -> bool:
     return CHAT_ID is None or message.chat.id == CHAT_ID
 
 
-def profanity_variants(text: str) -> str:
-    """Add common Latin/symbol substitutions used to evade profanity filters."""
-    lowered = (text or "").lower()
-    variant = lowered.translate(str.maketrans({"$": "с", "s": "с"}))
-    return text + " " + variant
-
-
-def spaced_job_fallback(text: str) -> bool:
-    """Catch job words deliberately split by spaces, e.g. 'подрабо тку'."""
-    normalized = (text or "").casefold()
-    compact = re.sub(r"[^а-яёa-z]", "", normalized)
-    return bool(
-        re.search(r"подработ\w*", compact, re.IGNORECASE | re.UNICODE)
-        or re.search(r"шабаш\w*", compact, re.IGNORECASE | re.UNICODE)
-        or re.search(r"ваканс\w*", compact, re.IGNORECASE | re.UNICODE)
-    )
-
-
-def direct_gender_job_fallback(text: str) -> bool:
-    """Catch short gendered job requests before the generic classifier can override them."""
-    normalized = " ".join((text or "").casefold().split())
-    return bool(
-        re.search(r"\bнужн(?:ы|а)\s+девочк\w*\b", normalized)
-        or re.search(r"\bнужн(?:ы|а)\s+девуш\w*\b", normalized)
-        or re.search(r"\bнужн(?:ы|а)\s+женщин\w*\b", normalized)
-        or re.search(r"\bнужн(?:ы|а)\s+женщин\w*\b", normalized)
-        or re.search(r"\bнужн(?:ы|а)\s+парн\w*\b", normalized)
-        or re.search(r"\bнужн(?:ы|а)\s+мужчин\w*\b", normalized)
-        or re.search(r"\bнужн(?:ы|а)\s+девуш\w*\b", normalized)
-        or re.search(r"\b(?:ищу|требуется|требуются)\s+девочк\w*\b", normalized)
-        or re.search(r"\b(?:ищу|требуется|требуются)\s+девуш\w*\b", normalized)
-        or re.search(r"\b(?:ищу|требуется|требуются)\s+женщин\w*\b", normalized)
-        or re.search(r"\b(?:ищу|требуется|требуются)\s+парн\w*\b", normalized)
-        or re.search(r"\b(?:ищу|требуется|требуются)\s+мужчин\w*\b", normalized)
-    )
-
-
-def direct_child_job_fallback(text: str) -> bool:
-    """Catch explicit requests for children/minors as workers without blocking ordinary child-related text."""
-    normalized = " ".join((text or "").casefold().split())
-    child = r"(?:дет(?:и|ей|ям|ьми|ях)?|реб[её]нок|ребят|подрост(?:ок|ка|ки|ков)?|школьник\w*)"
-    request = r"(?:нуж(?:ен|на|ны)|ищ(?:у|ем)|требу(?:ется|ются)|ищем|возьм(?:у|ём)|ищется)"
-    work_context = r"(?:на\s+работу|для\s+работы|на\s+подработку|для\s+подработки|работать|подработать|на\s+съёмку|для\s+съёмки|на\s+съемку|для\s+съемки)"
-    return bool(
-        re.search(rf"\b{request}\s+{child}(?:\s+{work_context})?\b", normalized)
-        or re.search(rf"\b{request}\s+{child}\s+{work_context}\b", normalized)
-        or re.search(rf"\b{child}\s+{work_context}\b", normalized)
-    )
-
-
 async def store_command(message: Message) -> None:
     if in_target_chat(message):
         await save_message(message, message.text or message.caption or "")
@@ -180,61 +120,34 @@ async def ping_command(message: Message) -> None:
     await message.answer("🏓 pong")
 
 
+# Правки сообщений — отдельный тип апдейта. Без этого обработчика спамер
+# постит безобидный текст, а затем правит его на спам, и бот этого не видит.
 @router.message()
+@router.edited_message()
 async def moderate(message: Message, bot: Bot) -> None:
-    logging.info(
-        "MODERATION INPUT chat=%s message=%s type=%s text=%r",
-        message.chat.id,
-        message.message_id,
-        message.content_type,
-        message.text or message.caption or "",
-    )
-
     if not in_target_chat(message):
         return
 
     text = message.text or message.caption or ""
+    edited = message.edit_date is not None
 
     await save_message(message, text)
 
-    classification_text = profanity_variants(text)
+    reason = classify_message(text, has_link=has_any_link(message, text))
 
-    # Hard fallback rules are evaluated BEFORE the generic classifier.
-    # This prevents a generic classification from masking explicit job requests.
-    if has_any_link(message, text):
-        reason = "link"
-    elif direct_gender_job_fallback(classification_text):
-        reason = "job_spam"
-        logging.info(
-            "Gender-job HARD fallback matched chat=%s message=%s text=%r",
-            message.chat.id,
-            message.message_id,
-            text,
-        )
-    elif direct_child_job_fallback(classification_text):
-        reason = "job_spam"
-        logging.info(
-            "Child-job HARD fallback matched chat=%s message=%s text=%r",
-            message.chat.id,
-            message.message_id,
-            text,
-        )
-    else:
-        reason = classify(classification_text)
-        if reason is None and spaced_job_fallback(classification_text):
-            reason = "job_spam"
-            logging.info("Spaced-job fallback matched chat=%s message=%s", message.chat.id, message.message_id)
+    # Правка — не флуд: считать её повтором нельзя, иначе автор, поправивший
+    # опечатку, получает метку флуда.
+    if reason is None and not edited and is_flood(message, text):
+        reason = "flood"
 
     logging.info(
-        "CLASSIFY chat=%s message=%s reason=%s text=%r",
+        "CLASSIFY chat=%s message=%s edited=%s reason=%s text=%r",
         message.chat.id,
         message.message_id,
+        edited,
         reason,
         text,
     )
-
-    if reason is None and is_flood(message, text):
-        reason = "flood"
 
     await mark_moderation(
         message,
