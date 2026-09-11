@@ -213,24 +213,53 @@ def test_legacy_map_matches_the_dashboard_copy():
     assert found.get("LEGACY_CLASSIFICATIONS") == LEGACY_CLASSIFICATIONS
 
 
-def test_ruleset_fingerprint_is_deterministic_and_tracks_rules():
-    """Хеш правил — основа /version: он должен быть стабильным и реагировать на правки."""
-    import moderation
-    from moderation import ruleset_fingerprint, ruleset_summary
+def test_fingerprint_covers_the_whole_moderation_source():
+    """Хеш должен отражать деплой, а не выборку словарей.
 
-    before = ruleset_fingerprint()
-    assert before == ruleset_fingerprint()
+    Пока он считался по вручную перечисленным наборам, правка
+    TASK_ACTION_SIGNALS или самой classify() меняла поведение, не меняя ответ
+    /version, — то есть диагностика деплоя могла соврать.
+    """
+    import hashlib
+    from pathlib import Path
+
+    import moderation
+    from moderation import _source_digest, ruleset_fingerprint, ruleset_summary
+
+    value = ruleset_fingerprint()
+    assert value == ruleset_fingerprint()
+    assert len(value) == 8 and int(value, 16) >= 0
+
+    root = Path(moderation.__file__).resolve().parent
+    expected = hashlib.sha256()
+    for path in sorted((root / "moderation.py", root / "bot.py")):
+        expected.update(path.read_bytes())
+    assert value == expected.hexdigest()[:8]
+
+    # Значения в памяти на хеш не влияют: он про то, какой код задеплоен.
+    original = moderation.TASK_ACTION_SIGNALS
+    try:
+        moderation.TASK_ACTION_SIGNALS = ()
+        assert ruleset_fingerprint() == value
+    finally:
+        moderation.TASK_ACTION_SIGNALS = original
+
+    assert ruleset_summary()["fingerprint"] == value
+    assert ruleset_summary()["categories"] == len(REASONS)
+
+
+def test_source_digest_tracks_bytes_and_survives_missing_files(tmp_path):
+    from moderation import _source_digest
+
+    first = tmp_path / "a.py"
+    second = tmp_path / "b.py"
+    first.write_text("x = 1\n", encoding="utf-8")
+    second.write_text("y = 2\n", encoding="utf-8")
+
+    before = _source_digest((first, second))
     assert len(before) == 8
 
-    original = moderation.JOB_PHRASES
-    try:
-        moderation.JOB_PHRASES = set(original) | {"заведомо новая фраза"}
-        assert ruleset_fingerprint() != before
-    finally:
-        moderation.JOB_PHRASES = original
-    assert ruleset_fingerprint() == before
+    first.write_text("x = 2\n", encoding="utf-8")
+    assert _source_digest((first, second)) != before
 
-    summary = ruleset_summary()
-    assert summary["fingerprint"] == before
-    assert summary["job_phrases"] == len(moderation.JOB_PHRASES)
-    assert summary["categories"] == len(REASONS)
+    assert _source_digest((first, tmp_path / "missing.py")) == ""

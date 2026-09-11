@@ -1,6 +1,7 @@
 import hashlib
 import re
 import unicodedata
+from pathlib import Path
 
 # NOTE: anti-spam rules are intentionally aggressive for the BK work chat.
 
@@ -265,25 +266,35 @@ def classify_message(text: str, has_link: bool = False):
     return None
 
 
-def ruleset_fingerprint() -> str:
-    """Короткий хеш активных правил.
+def _source_digest(paths) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(paths):
+        try:
+            digest.update(path.read_bytes())
+        except OSError:
+            return ""
+    return digest.hexdigest()[:8]
 
-    Меняется при любой правке словарей, поэтому /version показывает, какая
-    сборка реально запущена, без пломбирования на этапе сборки.
+
+def ruleset_fingerprint() -> str:
+    """Хеш исходников модерации — и правил, и логики.
+
+    Раньше хешировался вручную выбранный набор словарей. Из-за этого правка
+    TASK_ACTION_SIGNALS, регулярок или самой classify() меняла поведение, не
+    меняя ответ /version: диагностика деплоя могла соврать. Теперь берутся
+    файлы целиком, поэтому любое изменение поведения меняет и хеш.
+
+    bot.py включён: там живут пороги флуда и разбор ссылок из entities.
     """
-    payload = repr([
-        sorted(PROFANITY_PATTERNS), sorted(SPAM_PATTERNS), sorted(NEGATIVE_PHRASES),
-        sorted(JOB_PHRASES), sorted(JOB_SIGNALS), sorted(WEAK_JOB_PHRASES),
-        sorted(SHORT_JOB_PHRASES), sorted(OBFUSCATED_JOB_PATTERNS),
-        sorted(FAKE_PURCHASE_PHRASES), sorted(TASK_REQUEST_PHRASES),
-        sorted(PAID_TASK_SIGNALS), sorted(TASK_REQUEST_SIGNALS),
-        sorted(REASONS),
-    ])
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:8]
+    here = Path(__file__).resolve()
+    return _source_digest((here, here.parent / "bot.py")) or "unknown"
 
 
 def ruleset_summary() -> dict:
-    """Что показать в /version, чтобы отличить одну сборку от другой."""
+    """Что показать в /version, чтобы отличить одну сборку от другой.
+
+    Счётчики — для человека; отличает сборки именно хеш.
+    """
     return {
         "fingerprint": ruleset_fingerprint(),
         "job_phrases": len(JOB_PHRASES),
