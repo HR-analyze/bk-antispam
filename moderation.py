@@ -1,3 +1,4 @@
+import hashlib
 import re
 import unicodedata
 
@@ -262,3 +263,31 @@ def classify_message(text: str, has_link: bool = False):
     if any(spaced_job_fallback(v) for v in variants):
         return "job_spam"
     return None
+
+
+def ruleset_fingerprint() -> str:
+    """Короткий хеш активных правил.
+
+    Меняется при любой правке словарей, поэтому /version показывает, какая
+    сборка реально запущена, без пломбирования на этапе сборки.
+    """
+    payload = repr([
+        sorted(PROFANITY_PATTERNS), sorted(SPAM_PATTERNS), sorted(NEGATIVE_PHRASES),
+        sorted(JOB_PHRASES), sorted(JOB_SIGNALS), sorted(WEAK_JOB_PHRASES),
+        sorted(SHORT_JOB_PHRASES), sorted(OBFUSCATED_JOB_PATTERNS),
+        sorted(FAKE_PURCHASE_PHRASES), sorted(TASK_REQUEST_PHRASES),
+        sorted(PAID_TASK_SIGNALS), sorted(TASK_REQUEST_SIGNALS),
+        sorted(REASONS),
+    ])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:8]
+
+
+def ruleset_summary() -> dict:
+    """Что показать в /version, чтобы отличить одну сборку от другой."""
+    return {
+        "fingerprint": ruleset_fingerprint(),
+        "job_phrases": len(JOB_PHRASES),
+        "weak_job_phrases": len(WEAK_JOB_PHRASES),
+        "profanity_patterns": len(PROFANITY_PATTERNS),
+        "categories": len(REASONS),
+    }

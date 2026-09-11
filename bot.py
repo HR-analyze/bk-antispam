@@ -11,7 +11,7 @@ from aiogram.types import Message
 from dotenv import load_dotenv
 
 from database import init_db, mark_moderation, save_message
-from moderation import REASONS, classify_message, contains_link
+from moderation import REASONS, classify_message, contains_link, ruleset_summary
 
 load_dotenv()
 
@@ -112,6 +112,27 @@ async def start_command(message: Message) -> None:
 async def chat_id_command(message: Message) -> None:
     await store_command(message)
     await message.answer(f"CHAT_ID: {message.chat.id}")
+
+
+@router.message(Command("version"))
+async def version_command(message: Message) -> None:
+    """Показывает, какие правила реально запущены.
+
+    Отвечает на вопрос «доехал ли деплой?» без доступа к серверу: хеш меняется
+    при любой правке словарей модерации.
+    """
+    await store_command(message)
+    rules = ruleset_summary()
+    build = os.getenv("BUILD_SHA", "").strip()
+    lines = [
+        f"правила: {rules['fingerprint']}",
+        f"фраз о работе: {rules['job_phrases']} (+{rules['weak_job_phrases']} слабых)",
+        f"шаблонов мата: {rules['profanity_patterns']}",
+        f"категорий: {rules['categories']}",
+    ]
+    if build:
+        lines.append(f"сборка: {build}")
+    await message.answer("🔧 " + "\n".join(lines))
 
 
 @router.message(Command("ping"))

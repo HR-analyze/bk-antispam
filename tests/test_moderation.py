@@ -211,3 +211,26 @@ def test_legacy_map_matches_the_dashboard_copy():
         if isinstance(target, ast.Name) and target.id == "LEGACY_CLASSIFICATIONS"
     }
     assert found.get("LEGACY_CLASSIFICATIONS") == LEGACY_CLASSIFICATIONS
+
+
+def test_ruleset_fingerprint_is_deterministic_and_tracks_rules():
+    """Хеш правил — основа /version: он должен быть стабильным и реагировать на правки."""
+    import moderation
+    from moderation import ruleset_fingerprint, ruleset_summary
+
+    before = ruleset_fingerprint()
+    assert before == ruleset_fingerprint()
+    assert len(before) == 8
+
+    original = moderation.JOB_PHRASES
+    try:
+        moderation.JOB_PHRASES = set(original) | {"заведомо новая фраза"}
+        assert ruleset_fingerprint() != before
+    finally:
+        moderation.JOB_PHRASES = original
+    assert ruleset_fingerprint() == before
+
+    summary = ruleset_summary()
+    assert summary["fingerprint"] == before
+    assert summary["job_phrases"] == len(moderation.JOB_PHRASES)
+    assert summary["categories"] == len(REASONS)
