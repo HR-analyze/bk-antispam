@@ -60,7 +60,9 @@ PAID_TASK_SIGNALS = (
 
 PAID_AMOUNT_RE = re.compile(r"\b\d{2,6}\s*(?:₽|р\.?|руб(?:лей|ля)?\b)", re.IGNORECASE | re.UNICODE)
 BARE_AMOUNT_RE = re.compile(r"\b\d{2,6}\b")
-SPACED_DIGITS_RE = re.compile(r"(?<!\d)(?:\d\s+){1,}\d(?!\d)")
+# A spaced amount is made of one or more digit chunks separated by whitespace:
+# 6000, 6 000, 60 00, 6 00 0, 6 0 0 0 -> one numeric value.
+SPACED_DIGITS_RE = re.compile(r"(?<!\d)\d+(?:\s+\d+)+(?!\d)")
 
 TASK_REQUEST_PHRASES = {
     "кто сможет помочь", "кто-нибудь сможет помочь", "кто нибудь сможет помочь", "кто может помочь", "кто-нибудь может помочь", "кто нибудь может помочь",
