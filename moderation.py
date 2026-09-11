@@ -30,7 +30,17 @@ JOB_PHRASES = {"подработка", "подработку", "подработ
 # попадает в обычный отзыв ("над приложением ещё работа есть"), поэтому они
 # проверяются лишь в коротком сообщении.
 SHORT_JOB_PHRASES = ("работа есть", "есть работа", "нужна работа", "работа нужна", "ищу подработку", "подработка нужна")
-SHORT_JOB_MAX_WORDS = 5
+# Служебные слова, которые можно отбросить перед сравнением: "у вас работа есть"
+# — то же самое, что "работа есть". Всё остальное делает сообщение уже не
+# короткой формой: "спасибо, работа есть замечания" — это обычный отзыв.
+SHORT_JOB_FILLER = frozenset({"а", "у", "вас", "тут", "здесь", "ли", "же", "то", "вообще", "может", "есть ли"})
+
+# Убранные из JOB_PHRASES фрагменты. Сами по себе вердикта не дают, но в
+# сочетании с рабочим контекстом вне самой фразы — дают: "Работа на 2 часа,
+# оплата сразу" это объявление, а "оплата сразу или при получении?" — вопрос клиента.
+WEAK_JOB_PHRASES = ("открыла магазин", "открыл магазин", "открыли магазин", "открываем магазин", "открыла точку", "открыл точку", "открыли точку", "новая схема", "новой схемы", "есть варианты", "есть вариант", "новая работа", "на несколько часов", "на пару часов", "предоплата", "оплата сразу", "выплата сразу", "деньги сразу", "без опыта", "пишите мне")
+WORK_CONTEXT_RE = re.compile(r"\b(?:работ|подработ|шабаш|ваканс|смен|сотрудник|кандидат)", re.IGNORECASE | re.UNICODE)
+DURATION_RE = re.compile(r"\b\d{1,3}\s*(?:час|мин|дн|сут|смен)", re.IGNORECASE | re.UNICODE)
 
 JOB_SIGNALS = ("подработ", "шабаш", "кандидат", "сотрудник", "ваканс", "предоплат", "оплата", "выплата", "заработ", "схем", "магазин", "точк", "пару часов", "несколько часов", "мужчин", "женщин", "парни", "девушки", "девушка", "девочк", "парень", "ребят", "в личку", "в лс")
 OBFUSCATED_JOB_PATTERNS = (r"\b[wv]абашк\w*\b", r"\bш[аa]б[аa]шк\w*\b", r"\bп[оo]д[рr][аa]б[оo]тк\w*\b", r"\bпод\s*работ\w*\b")
@@ -119,10 +129,30 @@ def _count_signals(spaced: str, signals) -> int:
         if re.search(rf"\b{re.escape(normalize_spaced(signal))}", spaced)
     )
 
+def _weak_job_phrase_with_context(spaced: str, raw: str) -> bool:
+    """Слабая фраза + рабочий контекст ВНЕ неё.
+
+    Контекст ищется в остатке сообщения, иначе фраза подтверждала бы саму себя:
+    "новая работа кондитера видна сразу" содержит корень "работ" внутри фразы.
+    """
+    has_duration = bool(DURATION_RE.search(raw))
+    for phrase in WEAK_JOB_PHRASES:
+        normalized_phrase = normalize_spaced(phrase)
+        if normalized_phrase not in spaced:
+            continue
+        rest = spaced.replace(normalized_phrase, " ")
+        if WORK_CONTEXT_RE.search(rest) or has_duration:
+            return True
+    return False
+
 def _is_short_job_message(spaced: str) -> bool:
-    """Короткие фразы о работе — только если из них и состоит сообщение."""
-    if len(spaced.split()) > SHORT_JOB_MAX_WORDS: return False
-    return any(normalize_spaced(phrase) in spaced for phrase in SHORT_JOB_PHRASES)
+    """Короткие фразы о работе — только если из них и состоит сообщение.
+
+    Проверка подстроки здесь не годится даже с ограничением по длине: она
+    ловила "спасибо, работа есть замечания" и "у приложения работа есть ещё".
+    """
+    stripped = " ".join(w for w in spaced.split() if w not in SHORT_JOB_FILLER)
+    return stripped in {normalize_spaced(phrase) for phrase in SHORT_JOB_PHRASES}
 
 def _is_fake_purchase_spam(normalized: str, spaced: str) -> bool:
     if any(normalize_spaced(phrase) in spaced for phrase in FAKE_PURCHASE_PHRASES): return True
@@ -150,6 +180,7 @@ def classify(text: str):
     job_signal_count = _count_signals(spaced, JOB_SIGNALS)
     if job_signal_count >= 2: return "job_spam"
     if _is_short_job_message(spaced): return "job_spam"
+    if _weak_job_phrase_with_context(spaced, raw): return "job_spam"
     if _is_fake_purchase_spam(normalized, spaced): return "fake_purchase"
     if _is_task_request_spam(normalized, spaced): return "paid_task"
     if _is_paid_task_spam(normalized, spaced, raw): return "paid_task"
