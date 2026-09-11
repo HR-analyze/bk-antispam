@@ -126,13 +126,21 @@ def spaced_job_fallback(text: str) -> bool:
 
 
 def direct_gender_job_fallback(text: str) -> bool:
-    """Catch short job requests such as 'Нужны девочки' even without extra context."""
+    """Catch short gendered job requests before the generic classifier can override them."""
     normalized = " ".join((text or "").casefold().split())
     return bool(
         re.search(r"\bнужн(?:ы|а)\s+девочк\w*\b", normalized)
         or re.search(r"\bнужн(?:ы|а)\s+девуш\w*\b", normalized)
+        or re.search(r"\bнужн(?:ы|а)\s+женщин\w*\b", normalized)
+        or re.search(r"\bнужн(?:ы|а)\s+женщин\w*\b", normalized)
+        or re.search(r"\bнужн(?:ы|а)\s+парн\w*\b", normalized)
+        or re.search(r"\bнужн(?:ы|а)\s+мужчин\w*\b", normalized)
+        or re.search(r"\bнужн(?:ы|а)\s+девуш\w*\b", normalized)
         or re.search(r"\b(?:ищу|требуется|требуются)\s+девочк\w*\b", normalized)
         or re.search(r"\b(?:ищу|требуется|требуются)\s+девуш\w*\b", normalized)
+        or re.search(r"\b(?:ищу|требуется|требуются)\s+женщин\w*\b", normalized)
+        or re.search(r"\b(?:ищу|требуется|требуются)\s+парн\w*\b", normalized)
+        or re.search(r"\b(?:ищу|требуется|требуются)\s+мужчин\w*\b", normalized)
     )
 
 
@@ -183,27 +191,29 @@ async def moderate(message: Message, bot: Bot) -> None:
 
     classification_text = profanity_variants(text)
 
+    # Hard fallback rules are evaluated BEFORE the generic classifier.
+    # This prevents a generic classification from masking explicit job requests.
     if has_any_link(message, text):
         reason = "link"
+    elif direct_gender_job_fallback(classification_text):
+        reason = "job_spam"
+        logging.info(
+            "Gender-job HARD fallback matched chat=%s message=%s text=%r",
+            message.chat.id,
+            message.message_id,
+            text,
+        )
+    elif direct_child_job_fallback(classification_text):
+        reason = "job_spam"
+        logging.info(
+            "Child-job HARD fallback matched chat=%s message=%s text=%r",
+            message.chat.id,
+            message.message_id,
+            text,
+        )
     else:
         reason = classify(classification_text)
-        if reason is None and direct_gender_job_fallback(classification_text):
-            reason = "job_spam"
-            logging.info(
-                "Gender-job fallback matched chat=%s message=%s text=%r",
-                message.chat.id,
-                message.message_id,
-                text,
-            )
-        elif reason is None and direct_child_job_fallback(classification_text):
-            reason = "job_spam"
-            logging.info(
-                "Child-job fallback matched chat=%s message=%s text=%r",
-                message.chat.id,
-                message.message_id,
-                text,
-            )
-        elif reason is None and spaced_job_fallback(classification_text):
+        if reason is None and spaced_job_fallback(classification_text):
             reason = "job_spam"
             logging.info("Spaced-job fallback matched chat=%s message=%s", message.chat.id, message.message_id)
 
