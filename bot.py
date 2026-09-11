@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import re
 import time
 from collections import defaultdict, deque
 
@@ -113,6 +114,17 @@ def profanity_variants(text: str) -> str:
     return text + " " + variant
 
 
+def spaced_job_fallback(text: str) -> bool:
+    """Catch job words deliberately split by spaces, e.g. 'подрабо тку'."""
+    normalized = (text or "").casefold()
+    compact = re.sub(r"[^а-яёa-z]", "", normalized)
+    return bool(
+        re.search(r"подработ\w*", compact, re.IGNORECASE | re.UNICODE)
+        or re.search(r"шабаш\w*", compact, re.IGNORECASE | re.UNICODE)
+        or re.search(r"ваканс\w*", compact, re.IGNORECASE | re.UNICODE)
+    )
+
+
 async def store_command(message: Message) -> None:
     if in_target_chat(message):
         await save_message(message, message.text or message.caption or "")
@@ -153,6 +165,9 @@ async def moderate(message: Message, bot: Bot) -> None:
         reason = "link"
     else:
         reason = classify(classification_text)
+        if reason is None and spaced_job_fallback(classification_text):
+            reason = "job_spam"
+            logging.info("Spaced-job fallback matched chat=%s message=%s", message.chat.id, message.message_id)
 
     if reason is None and is_flood(message, text):
         reason = "flood"
