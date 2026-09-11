@@ -28,8 +28,6 @@ NEGATIVE_PHRASES = {
     "child porn", "child pornography", "sexual content involving minors",
 }
 
-# Recruitment / job-offer spam. Phrase based to avoid deleting ordinary
-# discussion of work.
 JOB_PHRASES = {
     "подработка", "подработку", "подработке", "подработки", "подработать",
     "шабашка", "шабашку", "шабашке", "шабашки", "хорошая подработка",
@@ -67,11 +65,25 @@ OBFUSCATED_JOB_PATTERNS = (
     r"\b[wv]абашк\w*\b",
     r"\bш[аa]б[аa]шк\w*\b",
     r"\bп[оo]д[рr][аa]б[оo]тк\w*\b",
+    r"\bпод\s*работ\w*\b",
 )
 
-# Manipulative requests for a fake/symbolic purchase, payment, receipt or
-# proof of cooperation. These are intentionally combination-based so a normal
-# message such as "купить продукты" is not removed.
+# Paid one-off tasks / gigs. This catches job-like requests even when the
+# author avoids words such as "вакансия" or "подработка".
+PAID_TASK_SIGNALS = (
+    "нужен человек", "нужна помощь", "ищу человека", "ищу кто", "нужен кто",
+    "кто сможет", "кто сможет помочь", "кто сможет присмотреть", "присмотреть за",
+    "присмотрит за", "посидеть с", "посидеть за", "помочь с", "нужно сделать",
+    "нужен на", "нужна на", "ищу на завтра", "ищу на сегодня", "на постоянную основу",
+    "на постоянной основе", "за 3 часа", "за 2 часа", "за час", "в день",
+    "в сутки", "плачу", "оплачу", "оплата", "выплата",
+)
+
+PAID_AMOUNT_RE = re.compile(
+    r"\b\d{2,6}\s*(?:₽|р\.?|руб(?:лей|ля)?\b)",
+    re.IGNORECASE | re.UNICODE,
+)
+
 FAKE_PURCHASE_PHRASES = {
     "купите у меня рекламу", "купить у меня рекламу", "закажите у меня рекламу",
     "купите у меня хоть", "купить у меня хоть", "сделайте заказ для отчета",
@@ -79,9 +91,8 @@ FAKE_PURCHASE_PHRASES = {
     "покупка ради отчета", "покупка ради отчёта", "для доказательства покупки",
     "доказательство покупки", "подтвердить покупку", "подтвердите покупку",
     "доказательство оплаты", "подтвердить оплату", "подтвердите оплату",
-    "скрин оплаты", "скрин оплаты", "скрин покупки", "скрин покупки",
-    "чек для отчета", "чек для отчёта", "чек для доказательства",
-    "я написал что вы купили", "я написал, что вы купили",
+    "скрин оплаты", "скрин покупки", "чек для отчета", "чек для отчёта",
+    "чек для доказательства", "я написал что вы купили", "я написал, что вы купили",
     "я написал что вы у меня купили", "я написал, что вы у меня купили",
     "написал у себя что вы купили", "написал у себя, что вы купили",
     "можете подтвердить что покупали", "можете подтвердить, что покупали",
@@ -132,31 +143,37 @@ def _matches_any(text: str, patterns) -> bool:
     return any(re.search(pattern, text, flags=re.IGNORECASE | re.UNICODE) for pattern in patterns)
 
 
+def _is_paid_task_spam(normalized: str, spaced: str) -> bool:
+    has_amount = bool(PAID_AMOUNT_RE.search(spaced))
+    task_signal_count = sum(1 for signal in PAID_TASK_SIGNALS if normalize_spaced(signal) in spaced)
+    has_people = any(token in normalized for token in ("человек", "людей", "кто", "ребят", "парень", "девуш"))
+    has_time = any(token in normalized for token in ("завтра", "сегодня", "час", "дня", "день", "сутки", "постоянн"))
+    has_work_word = any(token in normalized for token in ("работ", "подработ", "присмотр", "помощ", "помочь", "сделать", "посидет"))
+
+    # Examples: "5 человек на под работку, 4000 за 3 часа" and
+    # "нужен человек присмотреть за попугаем, плачу 5100 в день".
+    if has_amount and task_signal_count >= 1:
+        return True
+    if has_amount and has_people and has_time and has_work_word:
+        return True
+    return False
+
+
 def _is_fake_purchase_spam(normalized: str, spaced: str) -> bool:
-    """Detect requests to create a fake/symbolic purchase or proof of payment."""
     if any(normalize_spaced(phrase) in spaced for phrase in FAKE_PURCHASE_PHRASES):
         return True
 
     signal_count = sum(1 for signal in FAKE_PURCHASE_SIGNALS if normalize_spaced(signal) in spaced)
     has_small_amount = bool(FAKE_PURCHASE_AMOUNT_RE.search(spaced))
-    has_purchase_context = any(
-        token in normalized
-        for token in ("куп", "заказ", "реклам", "оплат", "покупк")
-    )
-    has_proof_context = any(
-        token in normalized
-        for token in ("доказ", "подтверд", "скрин", "чек", "отчет", "отчёт", "кейса", "портфолио")
-    )
+    has_purchase_context = any(token in normalized for token in ("куп", "заказ", "реклам", "оплат", "покупк"))
+    has_proof_context = any(token in normalized for token in ("доказ", "подтверд", "скрин", "чек", "отчет", "отчёт", "кейса", "портфолио"))
 
-    # Strong combination: purchase/payment + proof/report, optionally with a
-    # tiny amount or emotional/Telegram-channel bait.
     if has_purchase_context and has_proof_context:
         return True
     if has_small_amount and signal_count >= 2:
         return True
     if has_small_amount and has_purchase_context and signal_count >= 1:
         return True
-
     return False
 
 
@@ -176,6 +193,9 @@ def classify(text: str):
 
     if _is_fake_purchase_spam(normalized, spaced):
         return "fake_purchase_spam"
+
+    if _is_paid_task_spam(normalized, spaced):
+        return "job_spam"
 
     for phrase in JOB_PHRASES:
         if normalize_spaced(phrase) in spaced:
