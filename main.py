@@ -4,7 +4,7 @@ import os
 
 import uvicorn
 
-from api import BOT_RUNNING_ENV, app
+from api import app
 from bot import main as bot_main
 
 
@@ -35,10 +35,6 @@ async def run_api() -> None:
 
 
 async def main() -> None:
-    # Метка для /health: платформа с автоопределением может запустить только
-    # ASGI-приложение (uvicorn main:app), и тогда бот не стартует вовсе, а
-    # домен при этом отвечает — отказ получается незаметным.
-    os.environ[BOT_RUNNING_ENV] = "1"
     await asyncio.gather(
         bot_main(),
         run_api(),

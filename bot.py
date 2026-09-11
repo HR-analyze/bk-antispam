@@ -7,10 +7,13 @@ from collections import defaultdict, deque
 
 from aiogram import Bot, Dispatcher, Router
 from aiogram.enums import ChatMemberStatus, ChatType
+from aiogram.exceptions import TelegramConflictError
+from aiogram.methods import GetUpdates
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import Message
 from dotenv import load_dotenv
 
+import runtime
 from database import init_db, mark_moderation, save_message
 from moderation import REASONS, contains_link, decide, explain_message, ruleset_summary
 
@@ -304,9 +307,35 @@ async def moderate(message: Message, bot: Bot) -> None:
         )
 
 
+def track_polling(bot: Bot) -> None:
+    """Отмечает состояние бота по фактическим вызовам getUpdates.
+
+    Запуск процесса ничего не доказывает: если токен держит другой процесс,
+    aiogram логирует TelegramConflictError и ретраит бесконечно, наружу ничего
+    не пробрасывая. Единственный честный признак работы — успешный getUpdates.
+    """
+
+    @bot.session.middleware
+    async def _track(make_request, current_bot, method):
+        try:
+            result = await make_request(current_bot, method)
+        except TelegramConflictError:
+            if isinstance(method, GetUpdates):
+                runtime.set_bot_state(runtime.CONFLICT)
+            raise
+        except Exception:
+            if isinstance(method, GetUpdates):
+                runtime.set_bot_state(runtime.UNREACHABLE)
+            raise
+        if isinstance(method, GetUpdates):
+            runtime.set_bot_state(runtime.POLLING)
+        return result
+
+
 async def main() -> None:
     await init_db()
     bot = Bot(BOT_TOKEN)
+    track_polling(bot)
     dp = Dispatcher()
     dp.include_router(router)
 
@@ -325,10 +354,15 @@ async def main() -> None:
         f" | сборка {build}" if build else "",
     )
     logging.info("Bot started: @%s (%s) CHAT_ID=%s", me.username, me.id, CHAT_ID)
-    await dp.start_polling(
-        bot,
-        allowed_updates=dp.resolve_used_update_types(),
-    )
+
+    runtime.set_bot_state(runtime.STARTING)
+    try:
+        await dp.start_polling(
+            bot,
+            allowed_updates=dp.resolve_used_update_types(),
+        )
+    finally:
+        runtime.set_bot_state(runtime.STOPPED)
 
 
 if __name__ == "__main__":

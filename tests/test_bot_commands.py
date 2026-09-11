@@ -106,25 +106,108 @@ def test_every_documented_command_answers(command):
     assert replies(feed(command)), f"{command} остался без ответа"
 
 
-def test_health_reports_whether_the_bot_is_running():
+def test_health_reports_whether_the_bot_is_polling():
     """Веб-билдер платформы поднимает только ASGI-приложение.
 
     Бот тогда не стартует вовсе, а домен отвечает — отказ незаметен. /health
     обязан это показывать.
     """
     import asyncio
-    import os
 
     import api
+    import runtime
 
-    os.environ.pop(api.BOT_RUNNING_ENV, None)
-    assert asyncio.run(api.health())["bot_running"] is False
-
-    os.environ[api.BOT_RUNNING_ENV] = "1"
+    previous = runtime.bot_state()
     try:
+        runtime.set_bot_state(runtime.NOT_STARTED)
+        health = asyncio.run(api.health())
+        assert health["bot_running"] is False
+        assert health["bot_state"] == "not_started"
+
+        runtime.set_bot_state(runtime.POLLING)
         assert asyncio.run(api.health())["bot_running"] is True
     finally:
-        os.environ.pop(api.BOT_RUNNING_ENV, None)
+        runtime.set_bot_state(previous)
+
+
+@pytest.mark.parametrize(
+    "state,running",
+    [("not_started", False), ("starting", False), ("polling", True),
+     ("conflict", False), ("unreachable", False), ("stopped", False)],
+)
+def test_only_successful_polling_counts_as_running(state, running):
+    """Запуск процесса — не доказательство работы.
+
+    При конфликте токена aiogram ретраит getUpdates бесконечно и наружу ничего
+    не пробрасывает, поэтому «entrypoint вызван» означать «бот работает» не может.
+    """
+    import runtime
+
+    previous = runtime.bot_state()
+    try:
+        runtime.set_bot_state(state)
+        assert runtime.bot_is_polling() is running
+    finally:
+        runtime.set_bot_state(previous)
+
+
+def test_polling_state_follows_getupdates_outcomes():
+    """Состояние ведётся от самих вызовов getUpdates, а не от факта старта."""
+    import asyncio
+
+    from aiogram.exceptions import TelegramConflictError
+    from aiogram.methods import GetMe, GetUpdates
+
+    import bot as bot_module
+    import runtime
+
+    class Outcome(BaseSession):
+        def __init__(self, error=None):
+            super().__init__()
+            self.error = error
+
+        async def close(self):
+            pass
+
+        async def make_request(self, bot, method, timeout=None):
+            if self.error and isinstance(method, GetUpdates):
+                raise self.error
+            if isinstance(method, GetUpdates):
+                return []
+            return User(id=1, is_bot=True, first_name="b", username="b")
+
+        async def stream_content(self, *args, **kwargs):
+            yield b""
+
+    async def run(session):
+        telegram_bot = Bot("1:AAA", session=session)
+        bot_module.track_polling(telegram_bot)
+        await telegram_bot(GetMe())          # не должен трогать состояние
+        state_after_getme = runtime.bot_state()
+        try:
+            await telegram_bot(GetUpdates(timeout=0))
+        except Exception:
+            pass
+        return state_after_getme, runtime.bot_state()
+
+    previous = runtime.bot_state()
+    try:
+        runtime.set_bot_state(runtime.STARTING)
+        after_getme, after = asyncio.run(run(Outcome()))
+        assert after_getme == "starting", "getMe не должен объявлять бота рабочим"
+        assert after == "polling"
+
+        runtime.set_bot_state(runtime.POLLING)
+        _, after = asyncio.run(run(Outcome(
+            TelegramConflictError(method=GetUpdates(), message="terminated by other")
+        )))
+        assert after == "conflict", "конфликт токена обязан сбрасывать bot_running"
+
+        runtime.set_bot_state(runtime.POLLING)
+        _, after = asyncio.run(run(Outcome(RuntimeError("network"))))
+        assert after == "unreachable"
+    finally:
+        runtime.set_bot_state(previous)
 
 
 @pytest.mark.parametrize(
