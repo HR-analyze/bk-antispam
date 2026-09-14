@@ -92,6 +92,9 @@ async def health():
         # false => Telegram никто не слушает; bot_state говорит почему
         "bot_running": runtime.bot_is_polling(),
         "bot_state": runtime.bot_state(),
+        # Отвечает процесс, слушающий веб-порт. Если он не совпадает с
+        # instance из /version, значит Telegram обслуживает другой контейнер.
+        "instance": runtime.instance_id(),
     }
 
 

@@ -13,6 +13,7 @@ from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import Message
 from dotenv import load_dotenv
 
+import log_throttle
 import runtime
 from database import init_db, mark_moderation, save_message
 from moderation import REASONS, contains_link, decide, explain_message, ruleset_summary
@@ -34,6 +35,24 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
 )
+
+
+def log_throttle_seconds() -> float:
+    """Окно схлопывания повторов в логе; 0 — выключить.
+
+    Значение по умолчанию не ноль осознанно: при конфликте токена aiogram
+    ретраит вечно, и без окна лог за сутки распухает на порядок, пряча
+    настоящие ошибки.
+    """
+    raw = os.getenv("LOG_THROTTLE_SECONDS", "").strip()
+    try:
+        return float(raw) if raw else log_throttle.DEFAULT_WINDOW_SECONDS
+    except ValueError:
+        logging.warning("LOG_THROTTLE_SECONDS=%r не число, беру значение по умолчанию", raw)
+        return log_throttle.DEFAULT_WINDOW_SECONDS
+
+
+log_throttle.install(window_seconds=log_throttle_seconds())
 
 router = Router()
 
@@ -136,6 +155,9 @@ async def version_command(message: Message) -> None:
     ]
     if build:
         lines.append(f"сборка: {build}")
+    # Отвечает тот процесс, который выиграл getUpdates. Если instance здесь и в
+    # /health разный — токен делят два контейнера.
+    lines.append(f"инстанс: {runtime.instance_id()}")
     await message.answer("🔧 " + "\n".join(lines))
 
 
@@ -353,7 +375,13 @@ async def main() -> None:
         rules["categories"],
         f" | сборка {build}" if build else "",
     )
-    logging.info("Bot started: @%s (%s) CHAT_ID=%s", me.username, me.id, CHAT_ID)
+    logging.info(
+        "Bot started: @%s (%s) CHAT_ID=%s instance=%s",
+        me.username,
+        me.id,
+        CHAT_ID,
+        runtime.instance_id(),
+    )
 
     runtime.set_bot_state(runtime.STARTING)
     try:

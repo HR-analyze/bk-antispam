@@ -5,6 +5,9 @@
 где работает и API.
 """
 
+import os
+import socket
+
 NOT_STARTED = "not_started"   # процесс поднял только веб-часть
 STARTING = "starting"         # поллинг запущен, ни одного успешного getUpdates
 POLLING = "polling"           # апдейты реально забираются
@@ -31,3 +34,15 @@ def bot_is_polling() -> bool:
     aiogram бесконечно ретраит getUpdates, ничего не пробрасывая наружу.
     """
     return _state == POLLING
+
+
+def instance_id() -> str:
+    """Кто именно отвечает: hostname процесса и PID.
+
+    В Docker hostname по умолчанию — короткий id контейнера. Поэтому разные
+    instance в ответах /health и /version означают, что Telegram обслуживает
+    один процесс, а веб-часть отдаёт другой, то есть с одним токеном живут
+    два контейнера. Ровно этот случай выглядит как «бот работает, но в логах
+    бесконечный 409», и вычислять его иначе приходится по косвенным признакам.
+    """
+    return f"{socket.gethostname()}/{os.getpid()}"
