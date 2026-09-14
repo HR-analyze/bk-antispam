@@ -101,6 +101,19 @@ def test_check_is_silent_for_a_non_admin_in_a_group():
     assert any(name == "GetChatMember" for name, _ in session.calls)
 
 
+def test_version_names_the_process_that_won_polling():
+    """Инстанс в /version сравнивают с инстансом в /health.
+
+    Отвечает тот процесс, который выиграл getUpdates, а /health отдаёт тот,
+    что слушает веб-порт. Разные значения — два контейнера с одним токеном.
+    """
+    import runtime
+
+    answers = replies(feed("/version"))
+    assert len(answers) == 1
+    assert runtime.instance_id() in answers[0]
+
+
 @pytest.mark.parametrize("command", ["/start", "/ping", "/chat_id", "/version"])
 def test_every_documented_command_answers(command):
     assert replies(feed(command)), f"{command} остался без ответа"
