@@ -72,12 +72,35 @@ def test_web_only_process_never_imports_the_bot(monkeypatch):
 
     served = asyncio.Event()
 
-    async def fake_run_api():
-        served.set()
+    class FakeServer:
+        should_exit = False
 
-    monkeypatch.setattr(main_module, "run_api", fake_run_api)
+        async def serve(self):
+            served.set()
+
+    monkeypatch.setattr(main_module, "build_server", FakeServer)
     asyncio.run(main_module.main())
     assert served.is_set()
+
+
+def test_bot_half_starts_when_the_flag_is_on(monkeypatch):
+    """Обратная сторона того же теста: при RUN_BOT=1 поллинг действительно поднимают."""
+    monkeypatch.delenv("RUN_BOT", raising=False)
+    started = asyncio.Event()
+
+    class FakeServer:
+        should_exit = False
+
+        async def serve(self):
+            await started.wait()
+
+    async def fake_run_bot():
+        started.set()
+
+    monkeypatch.setattr(main_module, "build_server", FakeServer)
+    monkeypatch.setattr(main_module, "run_bot", fake_run_bot)
+    asyncio.run(main_module.main())
+    assert started.is_set()
 
 
 def test_the_guard_above_would_catch_an_import(monkeypatch):
