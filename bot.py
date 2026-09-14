@@ -354,7 +354,29 @@ def track_polling(bot: Bot) -> None:
         return result
 
 
-async def main() -> None:
+def start_delay_seconds() -> float:
+    """Пауза перед началом поллинга (BOT_START_DELAY), по умолчанию 0.
+
+    Не лечение, а пластырь на окно перекрытия при редеплое: если платформа
+    поднимает новый контейнер раньше, чем умер старый, задержка даёт старому
+    отпустить токен. Причину — второй постоянно живущий процесс — задержка не
+    убирает: там конфликт держится часами, а не секунды.
+    """
+    raw = os.getenv("BOT_START_DELAY", "").strip()
+    try:
+        return max(0.0, float(raw)) if raw else 0.0
+    except ValueError:
+        logging.warning("BOT_START_DELAY=%r не число, стартую без задержки", raw)
+        return 0.0
+
+
+async def main(handle_signals: bool = True) -> None:
+    """handle_signals=False — когда сигналами распоряжается вызывающий.
+
+    asyncio держит один обработчик на сигнал, и последний зарегистрированный
+    затирает предыдущий. При запуске из main.py рядом работает uvicorn, поэтому
+    владелец сигналов там ровно один и это не aiogram.
+    """
     await init_db()
     bot = Bot(BOT_TOKEN)
     track_polling(bot)
@@ -383,11 +405,17 @@ async def main() -> None:
         runtime.instance_id(),
     )
 
+    delay = start_delay_seconds()
+    if delay:
+        logging.info("BOT_START_DELAY=%s: жду перед поллингом", delay)
+        await asyncio.sleep(delay)
+
     runtime.set_bot_state(runtime.STARTING)
     try:
         await dp.start_polling(
             bot,
             allowed_updates=dp.resolve_used_update_types(),
+            handle_signals=handle_signals,
         )
     finally:
         runtime.set_bot_state(runtime.STOPPED)
