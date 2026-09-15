@@ -1,7 +1,9 @@
 import hashlib
+import os
 import re
 import unicodedata
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # NOTE: anti-spam rules are intentionally aggressive for the BK work chat.
 
@@ -135,6 +137,91 @@ def compact_spaced(text: str) -> str:
 def contains_link(text: str) -> bool:
     if not text: return False
     return bool(re.search(r"(?:https?://|www\.|t\.me/|telegram\.me/)", text, re.I))
+
+
+LINK_RE = re.compile(
+    r"(?:https?://|www\.)[^\s<>\"']+|(?:t\.me|telegram\.me)/[^\s<>\"']+",
+    re.IGNORECASE,
+)
+
+# Хвостовая пунктуация прилипает к адресу: «зайди на t.me/channel.» — точка
+# часть предложения, а не ссылки.
+_LINK_TRAILING = ".,;:!?\u2026)]}>\u00ab\u00bb\"'"
+
+
+def extract_links(text: str) -> list[str]:
+    """Адреса ссылок, видимые в самом тексте.
+
+    Ссылку, спрятанную в сущности text_link, отсюда не достать: в тексте её
+    адреса нет вовсе. Такие адреса приходят из bot.message_links().
+    """
+    if not text:
+        return []
+    return [match.group(0).rstrip(_LINK_TRAILING) for match in LINK_RE.finditer(text)]
+
+
+HOST_ALIASES = {"telegram.me": "t.me"}
+
+
+def normalize_link(url: str) -> str:
+    """Адрес без схемы, www, порта, параметров и хвостового слэша.
+
+    Разбор идёт через urlsplit, а не регуляркой: в «https://t.me@evil.com/x»
+    настоящий хост — evil.com, и сравнение подстрок тут пропустило бы подделку.
+    """
+    raw = (url or "").strip().rstrip(_LINK_TRAILING)
+    if not raw:
+        return ""
+    if not re.match(r"^[a-z][a-z0-9+.\-]*://", raw, re.IGNORECASE):
+        raw = "https://" + raw
+    try:
+        parts = urlsplit(raw)
+    except ValueError:
+        return ""
+    host = (parts.hostname or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if not host:
+        return ""
+    # telegram.me — официальный алиас t.me и ведёт на тот же канал. Приводим к
+    # одному виду, иначе исключение зависело бы от того, какую форму адреса
+    # человек скопировал.
+    host = HOST_ALIASES.get(host, host)
+    return f"{host}{parts.path.rstrip('/')}".lower()
+
+
+# Ссылки, которые проходят модерацию. Домен целиком открывать нельзя: t.me —
+# это как раз то, чем пользуются спамеры, поэтому исключение задаётся до пути.
+DEFAULT_ALLOWED_LINKS = ("t.me/karavaeviru",)
+
+
+def _load_allowed_links() -> tuple[str, ...]:
+    """Разрешённые ссылки: встроенные плюс ALLOWED_LINKS из окружения.
+
+    Окружение добавляет, а не заменяет: иначе одна опечатка в переменной молча
+    снимает исключение, которое уже работает.
+    """
+    extra = re.split(r"[,\s]+", os.getenv("ALLOWED_LINKS", "").strip())
+    normalized = [normalize_link(item) for item in (*DEFAULT_ALLOWED_LINKS, *extra)]
+    return tuple(dict.fromkeys(item for item in normalized if item))
+
+
+ALLOWED_LINKS = _load_allowed_links()
+
+
+def link_is_allowed(url: str) -> bool:
+    """True, если адрес входит в исключения.
+
+    Подпути разрешены (ссылка на конкретный пост того же канала), но только по
+    границе слэша: t.me/channel не должен открывать t.me/channelfake.
+    """
+    target = normalize_link(url)
+    if not target:
+        return False
+    return any(
+        target == allowed or target.startswith(allowed + "/")
+        for allowed in ALLOWED_LINKS
+    )
 
 def _matches_any(text: str, patterns) -> bool:
     return any(re.search(pattern, text, flags=re.IGNORECASE | re.UNICODE) for pattern in patterns)
@@ -365,13 +452,27 @@ def direct_child_job_fallback(text: str) -> bool:
     )
 
 
-def decide(text: str, has_link: bool = False) -> tuple[str | None, str | None]:
+def decide(
+    text: str,
+    has_link: bool = False,
+    links: list[str] | None = None,
+) -> tuple[str | None, str | None]:
     """Полное решение по сообщению: вердикт и правило.
 
     Порядок важен: жёсткие правила идут до общего классификатора, иначе общая
     классификация перекрывает явные запросы о работе.
+
+    links — адреса ссылок сообщения, включая спрятанные в сущностях Telegram.
+    Когда все они в исключениях, проверка продолжается по остальным правилам:
+    разрешённая ссылка не должна протаскивать вместе с собой спам.
     """
-    if has_link or contains_link(text):
+    found = extract_links(text) if links is None else list(links)
+    if found:
+        if any(not link_is_allowed(url) for url in found):
+            return "link", "link"
+    elif has_link or contains_link(text):
+        # Ссылка есть, а адреса нет — так выглядит text_link, где адрес виден
+        # только в сущности. Пропускать такое нельзя.
         return "link", "link"
     variants = text_variants(text)
     if any(direct_gender_job_fallback(v) for v in variants):
@@ -387,14 +488,18 @@ def decide(text: str, has_link: bool = False) -> tuple[str | None, str | None]:
     return None, None
 
 
-def classify_message(text: str, has_link: bool = False):
+def classify_message(text: str, has_link: bool = False, links: list[str] | None = None):
     """Ключ из REASONS или None."""
-    return decide(text, has_link)[0]
+    return decide(text, has_link, links)[0]
 
 
-def explain_message(text: str, has_link: bool = False) -> dict:
+def explain_message(
+    text: str,
+    has_link: bool = False,
+    links: list[str] | None = None,
+) -> dict:
     """То же решение, но с объяснением — для /check и разбора жалоб."""
-    reason, rule = decide(text, has_link)
+    reason, rule = decide(text, has_link, links)
     return {
         "reason": reason,
         "rule": rule,

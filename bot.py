@@ -4,6 +4,7 @@ import logging
 import os
 import time
 from collections import defaultdict, deque
+from contextlib import suppress
 
 from aiogram import Bot, Dispatcher, Router
 from aiogram.enums import ChatMemberStatus, ChatType
@@ -16,7 +17,14 @@ from dotenv import load_dotenv
 import log_throttle
 import runtime
 from database import init_db, mark_moderation, save_message
-from moderation import REASONS, contains_link, decide, explain_message, ruleset_summary
+from moderation import (
+    REASONS,
+    contains_link,
+    decide,
+    explain_message,
+    extract_links,
+    ruleset_summary,
+)
 
 load_dotenv()
 
@@ -116,6 +124,25 @@ def has_any_link(message: Message, text: str) -> bool:
     return contains_link(text)
 
 
+def message_links(message: Message, text: str) -> list[str]:
+    """Адреса всех ссылок сообщения.
+
+    По тексту одному исключения не проверить: в text_link виден только подпись,
+    а сам адрес лежит в сущности — там и прячут подмену.
+    """
+    source = message.text or message.caption or ""
+    links = extract_links(text)
+    for entity in list(message.entities or []) + list(message.caption_entities or []):
+        if entity.type == "text_link" and entity.url:
+            links.append(entity.url)
+        elif entity.type == "url" and source:
+            # У url-сущности адрес и есть её текст; смещения считаются по
+            # исходному тексту сообщения, а не по проверяемому фрагменту.
+            with suppress(Exception):
+                links.append(entity.extract_from(source))
+    return links
+
+
 def in_target_chat(message: Message) -> bool:
     return CHAT_ID is None or message.chat.id == CHAT_ID
 
@@ -180,6 +207,23 @@ async def is_chat_admin(bot: Bot, message: Message) -> bool:
     return member.status in ADMIN_STATUSES
 
 
+async def is_exempt_sender(bot: Bot, message: Message) -> bool:
+    """Сообщения администрации не удаляем.
+
+    Вызывается только когда сообщение уже признано нарушением: иначе на каждое
+    чистое сообщение уходил бы лишний getChatMember.
+    """
+    if getattr(message, "is_automatic_forward", False):
+        # Пост, автоматически пересланный из привязанного канала.
+        return True
+    sender_chat = getattr(message, "sender_chat", None)
+    if sender_chat is not None:
+        # Анонимный админ пишет от имени самой группы. Произвольный канал
+        # исключением не считаем: от его имени может писать любой участник.
+        return sender_chat.id == message.chat.id
+    return await is_chat_admin(bot, message)
+
+
 def format_check_reply(result: dict, fingerprint: str) -> str:
     """Ответ /check.
 
@@ -224,7 +268,11 @@ async def check_command(message: Message, command: CommandObject, bot: Bot) -> N
 
     # Ссылка может жить в entity, а не в тексте. Боевой путь её видит, поэтому
     # и диагностика обязана — иначе она даст противоположный вердикт.
-    result = explain_message(probe, has_link=has_any_link(message, probe))
+    result = explain_message(
+        probe,
+        has_link=has_any_link(message, probe),
+        links=message_links(message, probe),
+    )
     await message.answer(format_check_reply(result, ruleset_summary()["fingerprint"]))
 
 
@@ -264,7 +312,11 @@ async def moderate(message: Message, bot: Bot) -> None:
     # вызывался, сообщение оставалось в чате, а в дашборде выглядело «чистым».
     # Теперь сбой виден и в логах, и в дашборде.
     try:
-        reason, rule = decide(text, has_link=has_any_link(message, text))
+        reason, rule = decide(
+            text,
+            has_link=has_any_link(message, text),
+            links=message_links(message, text),
+        )
     except Exception:
         logging.exception(
             "CLASSIFY FAILED chat=%s message=%s text=%r",
@@ -300,6 +352,16 @@ async def moderate(message: Message, bot: Bot) -> None:
     )
 
     if not reason:
+        return
+
+    if await is_exempt_sender(bot, message):
+        # Запись в БД уже сделана выше с deleted=False, дописывать нечего.
+        logging.info(
+            "EXEMPT chat=%s message=%s reason=%s: сообщение от администрации",
+            message.chat.id,
+            message.message_id,
+            reason,
+        )
         return
 
     try:
