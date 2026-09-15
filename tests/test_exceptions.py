@@ -79,6 +79,40 @@ def test_allowed_link_does_not_smuggle_a_second_link():
     assert m.decide(text) == ("link", "link")
 
 
+@pytest.mark.parametrize("url", [
+    "https://t.me/spamshop",
+    "http://evil.com/pay",
+    "www.evil.com/pay",
+    "t.me/spamshop",
+    "telegram.me/spamshop",
+    "https://evil.com",
+    "https://evil.com/",
+    "https://evil.com/a?b=c#d",
+    "https://sub.evil.com:8443/pay",
+    "https://evil.com/\u0440\u0430\u0431\u043e\u0442\u0430",
+    "HTTPS://EVIL.COM/PAY",
+])
+def test_every_link_contains_link_sees_is_also_extracted(url):
+    """Инвариант: LINK_RE не должна быть уже contains_link на рабочих адресах.
+
+    Вердикт про ссылку строится по извлечённым адресам. Если contains_link
+    видит ссылку, а extract_links её не разобрал, такой адрес рядом с
+    разрешённым прошёл бы незамеченным. Проверяется на инварианте, а не
+    вырезанием разрешённых адресов из текста: вырезание по подстроке даёт
+    ложные срабатывания — из «t.me/x www.t.me/x» остаётся огрызок «www.».
+    """
+    for text in (url, f"смотри {url} тут", f"{ALLOWED} и ещё {url}"):
+        assert m.contains_link(text) is True, text
+        assert m.extract_links(text), text
+        assert m.decide(text) == ("link", "link"), text
+
+
+def test_allowed_and_bare_forms_together_pass():
+    assert m.decide(f"вот {ALLOWED} и всё") == (None, None)
+    assert m.decide(f"{ALLOWED} {ALLOWED}") == (None, None)
+    assert m.decide("t.me/karavaeviru www.t.me/karavaeviru") == (None, None)
+
+
 def test_allowed_link_does_not_smuggle_spam_text():
     """Главное: исключение снимает вердикт про ссылку, а не всю модерацию."""
     reason, rule = m.decide(f"нужна девочка на выходные {ALLOWED}")
