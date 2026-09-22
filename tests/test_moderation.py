@@ -279,6 +279,33 @@ def test_link_from_telegram_entities():
     assert classify_message("тут всё", has_link=False) is None
 
 
+@pytest.mark.parametrize("text", [
+    "Ayurvedas @ce3343333vvbot affray",
+    "пиши в @SomeBot, там всё расскажут",
+    "@free_money_bot",
+])
+def test_bot_mention_is_a_link(text):
+    """@somebot открывается как t.me/somebot — это реклама, как и ссылка."""
+    assert classify_message(text) == "link"
+    assert classify_message(text, links=[]) == "link"
+
+
+@pytest.mark.parametrize("text", [
+    "@ivan спасибо за заказ",
+    "пишите на shop@mybot.ru",
+    "@somebot_fan привет",
+])
+def test_people_mentions_and_emails_stay(text):
+    assert classify_message(text) is None
+
+
+def test_allowed_bot_mention_passes(monkeypatch):
+    import moderation
+
+    monkeypatch.setattr(moderation, "ALLOWED_LINKS", ("t.me/companybot",))
+    assert classify_message("вопросы в @CompanyBot") is None
+
+
 def test_legacy_classifications_map_to_known_keys():
     """Легаси-метки из БД должны нормализоваться в существующие ключи.
 

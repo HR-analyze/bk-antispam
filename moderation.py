@@ -160,6 +160,20 @@ def extract_links(text: str) -> list[str]:
     return [match.group(0).rstrip(_LINK_TRAILING) for match in LINK_RE.finditer(text)]
 
 
+# Упоминание бота — та же ссылка: @somebot открывается как t.me/somebot, и спам
+# ведёт именно туда. Юзернейм Telegram — 5–32 символа [a-z0-9_], у ботов он
+# обязан кончаться на «bot». Упоминания людей не трогаем: «@ivan, спасибо» —
+# обычная переписка.
+BOT_MENTION_RE = re.compile(r"(?<![\w@])@([a-z][a-z0-9_]{1,29}bot)\b", re.IGNORECASE)
+
+
+def extract_bot_mentions(text: str) -> list[str]:
+    """Упоминания ботов из текста в виде t.me-ссылок."""
+    if not text:
+        return []
+    return [f"t.me/{match.group(1)}" for match in BOT_MENTION_RE.finditer(text)]
+
+
 HOST_ALIASES = {"telegram.me": "t.me"}
 
 
@@ -467,6 +481,7 @@ def decide(
     разрешённая ссылка не должна протаскивать вместе с собой спам.
     """
     found = extract_links(text) if links is None else list(links)
+    found += extract_bot_mentions(text)
     if found:
         if any(not link_is_allowed(url) for url in found):
             return "link", "link"
