@@ -352,11 +352,16 @@ def _is_fake_purchase_spam(normalized: str, spaced: str) -> bool:
     if has_small_amount and has_purchase_context and signal_count >= 1: return True
     return False
 
-# Зарплата с цифрой — признак вакансии, а не вопроса клиента: "зп от 100 тыс",
-# "доход от 3000". Проверяется по raw_spaced: normalize_text превращает цифры
-# в буквы ("100" -> "иоо").
+# "Зп от 100 тыс", "доход до 3000" — форма объявления. Без "от/до" зарплата с
+# числом бывает и у клиента: "зп 15-го, придержите заказ", "мой доход 100000,
+# рассрочка есть?" — такое засчитывается только вместе с признаком вакансии.
+# Проверяется по raw_spaced: normalize_text превращает цифры в буквы ("100" -> "иоо").
 SALARY_RE = re.compile(
-    r"\b(?:зп|з п|зарплат\w*|оклад\w*|доход\w*)\s+(?:от\s+|до\s+)?\d",
+    r"\b(?:зп|з п|зарплат\w*|оклад\w*|доход\w*)\s+(?:от|до)\s+\d",
+    re.IGNORECASE | re.UNICODE,
+)
+SALARY_BARE_RE = re.compile(
+    r"\b(?:зп|з п|зарплат\w*|оклад\w*|доход\w*)\s+\d",
     re.IGNORECASE | re.UNICODE,
 )
 # Ставка за период или "на руки": "100 тыс в месяц", "6к на руки". Сама по
@@ -373,7 +378,8 @@ VACANCY_SIGNALS = ("график", "совмещ", "помощни", "задан
 def _is_vacancy_spam(spaced: str, raw: str) -> bool:
     if SALARY_RE.search(raw):
         return True
-    return bool(PAY_RATE_RE.search(raw)) and _count_signals(spaced, VACANCY_SIGNALS) >= 1
+    has_pay = bool(SALARY_BARE_RE.search(raw) or PAY_RATE_RE.search(raw))
+    return has_pay and _count_signals(spaced, VACANCY_SIGNALS) >= 1
 
 
 def classify_with_rule(text: str) -> tuple[str | None, str | None]:
@@ -447,10 +453,12 @@ def text_variants(text: str) -> tuple[str, ...]:
     if homoglyph != lowered:
         variants.append(homoglyph)
     # Фолбэки ниже работают по casefold, а не по normalize_text, поэтому
-    # греческие двойники им нужно подменить отдельно.
-    confusable = lowered.translate(CONFUSABLES)
-    if confusable != lowered:
-        variants.append(confusable)
+    # греческие двойники им нужно подменить отдельно — и поверх каждого
+    # варианта: "требует$я ποмощник" смешивает оба обхода сразу.
+    for variant in list(variants):
+        confusable = variant.lower().translate(CONFUSABLES)
+        if confusable not in variants:
+            variants.append(confusable)
     return tuple(variants)
 
 
@@ -466,8 +474,6 @@ WHO_STEMS = (
     "девочк", "девочек", "девочьк", "девчонк", "девч[её]нк", "девчат",
     "девушк", "девушек", "девушьк", "девк", "т[её]лочк",
     "женщин", "парн", "парень", "парней", "мужчин", "мальчик", "ребят", "модел",
-    # "Требуется помощник для малого бизнеса" — та же вакансия, только без пола.
-    "помощни[кц]", "сотрудни[кц]",
 )
 # Дательный, творительный и предложный — это обращение клиента, а не набор:
 # "нужны девочкАМ заколки", "нужны ребятАМ подарки".
@@ -493,6 +499,34 @@ def direct_gender_job_fallback(text: str) -> bool:
     if GENDER_JOB_RE.search(normalized):
         return True
     return bool(REVERSE_JOB_RE.search(normalize_spaced(text)))
+
+
+# "Требуется помощник для малого бизнеса" — вакансия без пола. В WHO_STEMS эти
+# слова не кладём: "ищу сотрудника, который принимал мой заказ" и "нужен
+# помощник выбрать торт" — клиенты. Поэтому "нужен/ищу" засчитываются только
+# с контекстом вакансии, а "требуется" — язык объявления и достаточен сам.
+_STAFF = rf"(?:помощни[кц]|сотрудни[кц])(?!{_CASE_TRAP})\w*"
+STAFF_JOB_RE = re.compile(rf"\b({_REQUEST})\s+{_ADJ}{_STAFF}\b", re.IGNORECASE | re.UNICODE)
+STAFF_CONTEXT_RE = re.compile(
+    # Существительное "работа", а не глагол: "сотрудник, который работал вчера".
+    # Смена — только "на смену": "из вечерней смены" пишет клиент.
+    r"\b(?:работ(?:а|у|ы|е|ой)\b|подработ|ваканс|на\s+смен|график|зп|зарплат|оклад|доход|бизнес|"
+    r"в\s+команду|на\s+склад|в\s+офис|на\s+постоянн|удал[её]н|совмещ|без\s+опыта|обучен|"
+    r"в\s+лс|в\s+личку|пишите)",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def direct_staff_job_fallback(text: str) -> bool:
+    """«Требуется помощник», «ищем сотрудника на склад»."""
+    normalized = " ".join((text or "").casefold().split())
+    match = STAFF_JOB_RE.search(normalized)
+    if not match:
+        return False
+    if match.group(1).startswith("требу"):
+        return True
+    rest = normalized[:match.start()] + " " + normalized[match.end():]
+    return bool(STAFF_CONTEXT_RE.search(rest))
 
 
 def direct_child_job_fallback(text: str) -> bool:
@@ -535,6 +569,8 @@ def decide(
     variants = text_variants(text)
     if any(direct_gender_job_fallback(v) for v in variants):
         return "job_spam", "gender_fallback"
+    if any(direct_staff_job_fallback(v) for v in variants):
+        return "job_spam", "staff_fallback"
     if any(direct_child_job_fallback(v) for v in variants):
         return "job_spam", "child_fallback"
     for variant in variants:
