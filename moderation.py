@@ -99,8 +99,19 @@ ADULT_PHRASES = (
 ADULT_AGE_RE = re.compile(r"\b18\s*\+", re.IGNORECASE | re.UNICODE)
 
 
+# Греческие буквы и математические знаки, похожие на кириллицу. NFKC их не
+# трогает, поэтому "п ο ∂ р α б ο τ κ α" (омикрон, ∂, альфа, тау, каппа)
+# проходило мимо всех правил: normalize_spaced просто вырезал эти символы.
+CONFUSABLES = str.maketrans({
+    "α": "а", "β": "в", "γ": "у", "δ": "б", "ε": "е", "η": "н", "ι": "и",
+    "κ": "к", "λ": "л", "μ": "м", "ο": "о", "π": "п", "ρ": "р", "σ": "о",
+    "ς": "с", "τ": "т", "υ": "у", "φ": "ф", "χ": "х", "ω": "ш",
+    "∂": "д", "ð": "д",
+})
+
+
 def normalize_text(text: str) -> str:
-    text = unicodedata.normalize("NFKC", text or "").casefold()
+    text = unicodedata.normalize("NFKC", text or "").casefold().translate(CONFUSABLES)
     replacements = str.maketrans({"a": "а", "b": "б", "c": "с", "e": "е", "h": "х", "i": "и", "k": "к", "m": "м", "n": "н", "o": "о", "p": "п", "r": "р", "s": "с", "t": "т", "u": "у", "v": "в", "x": "х", "y": "у", "z": "з", "$": "с", "0": "о", "1": "и", "3": "з", "4": "ч", "6": "б"})
     return text.translate(replacements)
 
@@ -341,6 +352,36 @@ def _is_fake_purchase_spam(normalized: str, spaced: str) -> bool:
     if has_small_amount and has_purchase_context and signal_count >= 1: return True
     return False
 
+# "Зп от 100 тыс", "доход до 3000" — форма объявления. Без "от/до" зарплата с
+# числом бывает и у клиента: "зп 15-го, придержите заказ", "мой доход 100000,
+# рассрочка есть?" — такое засчитывается только вместе с признаком вакансии.
+# Проверяется по raw_spaced: normalize_text превращает цифры в буквы ("100" -> "иоо").
+SALARY_RE = re.compile(
+    r"\b(?:зп|з п|зарплат\w*|оклад\w*|доход\w*)\s+(?:от|до)\s+\d",
+    re.IGNORECASE | re.UNICODE,
+)
+SALARY_BARE_RE = re.compile(
+    r"\b(?:зп|з п|зарплат\w*|оклад\w*|доход\w*)\s+\d",
+    re.IGNORECASE | re.UNICODE,
+)
+# Ставка за период или "на руки": "100 тыс в месяц", "6к на руки". Сама по
+# себе встречается и у клиента ("трачу 10 тыс в месяц"), поэтому нужен ещё
+# один признак объявления из VACANCY_SIGNALS.
+PAY_RATE_RE = re.compile(
+    r"\b\d+\s*(?:к|k|т|тыс\w*|т р)?\s*(?:руб\w*\s+|р\s+|₽\s*)?(?:в|за)\s+(?:месяц|мес|неделю|день|смену|сутки)\b"
+    r"|\bна\s+руки\s+(?:от\s+)?\d|\b\d+\s*(?:к|k|тыс\w*)\s+на\s+руки\b",
+    re.IGNORECASE | re.UNICODE,
+)
+VACANCY_SIGNALS = ("график", "совмещ", "помощни", "задани", "задач", "удален", "удалён", "без опыта", "обучен", "в лс", "в личку", "пишите", "подробнее", "бизнес")
+
+
+def _is_vacancy_spam(spaced: str, raw: str) -> bool:
+    if SALARY_RE.search(raw):
+        return True
+    has_pay = bool(SALARY_BARE_RE.search(raw) or PAY_RATE_RE.search(raw))
+    return has_pay and _count_signals(spaced, VACANCY_SIGNALS) >= 1
+
+
 def classify_with_rule(text: str) -> tuple[str | None, str | None]:
     """Вердикт и имя сработавшего правила.
 
@@ -362,6 +403,7 @@ def classify_with_rule(text: str) -> tuple[str | None, str | None]:
     if _count_signals(spaced, JOB_SIGNALS) >= 2: return "job_spam", "job_signals>=2"
     if _is_short_job_message(spaced): return "job_spam", "short_job_message"
     if _weak_job_phrase_with_context(spaced, raw): return "job_spam", "weak_job_phrase+context"
+    if _is_vacancy_spam(spaced, raw): return "job_spam", "vacancy_salary"
     if _is_fake_purchase_spam(normalized, spaced): return "fake_purchase", "fake_purchase"
     if _is_task_request_spam(normalized, spaced): return "paid_task", "task_request"
     if _is_paid_task_spam(normalized, spaced, raw): return "paid_task", "paid_task"
@@ -410,6 +452,13 @@ def text_variants(text: str) -> tuple[str, ...]:
     homoglyph = lowered.translate(str.maketrans({"p": "р"}))
     if homoglyph != lowered:
         variants.append(homoglyph)
+    # Фолбэки ниже работают по casefold, а не по normalize_text, поэтому
+    # греческие двойники им нужно подменить отдельно — и поверх каждого
+    # варианта: "требует$я ποмощник" смешивает оба обхода сразу.
+    for variant in list(variants):
+        confusable = variant.lower().translate(CONFUSABLES)
+        if confusable not in variants:
+            variants.append(confusable)
     return tuple(variants)
 
 
@@ -452,6 +501,34 @@ def direct_gender_job_fallback(text: str) -> bool:
     return bool(REVERSE_JOB_RE.search(normalize_spaced(text)))
 
 
+# "Требуется помощник для малого бизнеса" — вакансия без пола. В WHO_STEMS эти
+# слова не кладём: "ищу сотрудника, который принимал мой заказ" и "нужен
+# помощник выбрать торт" — клиенты. Поэтому "нужен/ищу" засчитываются только
+# с контекстом вакансии, а "требуется" — язык объявления и достаточен сам.
+_STAFF = rf"(?:помощни[кц]|сотрудни[кц])(?!{_CASE_TRAP})\w*"
+STAFF_JOB_RE = re.compile(rf"\b({_REQUEST})\s+{_ADJ}{_STAFF}\b", re.IGNORECASE | re.UNICODE)
+STAFF_CONTEXT_RE = re.compile(
+    # Существительное "работа", а не глагол: "сотрудник, который работал вчера".
+    # Смена — только "на смену": "из вечерней смены" пишет клиент.
+    r"\b(?:работ(?:а|у|ы|е|ой)\b|подработ|ваканс|на\s+смен|график|зп|зарплат|оклад|доход|бизнес|"
+    r"в\s+команду|на\s+склад|в\s+офис|на\s+постоянн|удал[её]н|совмещ|без\s+опыта|обучен|"
+    r"в\s+лс|в\s+личку|пишите)",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def direct_staff_job_fallback(text: str) -> bool:
+    """«Требуется помощник», «ищем сотрудника на склад»."""
+    normalized = " ".join((text or "").casefold().split())
+    match = STAFF_JOB_RE.search(normalized)
+    if not match:
+        return False
+    if match.group(1).startswith("требу"):
+        return True
+    rest = normalized[:match.start()] + " " + normalized[match.end():]
+    return bool(STAFF_CONTEXT_RE.search(rest))
+
+
 def direct_child_job_fallback(text: str) -> bool:
     """Явные запросы детей/подростков как работников."""
     normalized = " ".join((text or "").casefold().split())
@@ -492,6 +569,8 @@ def decide(
     variants = text_variants(text)
     if any(direct_gender_job_fallback(v) for v in variants):
         return "job_spam", "gender_fallback"
+    if any(direct_staff_job_fallback(v) for v in variants):
+        return "job_spam", "staff_fallback"
     if any(direct_child_job_fallback(v) for v in variants):
         return "job_spam", "child_fallback"
     for variant in variants:
