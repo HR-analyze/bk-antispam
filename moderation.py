@@ -99,8 +99,19 @@ ADULT_PHRASES = (
 ADULT_AGE_RE = re.compile(r"\b18\s*\+", re.IGNORECASE | re.UNICODE)
 
 
+# Греческие буквы и математические знаки, похожие на кириллицу. NFKC их не
+# трогает, поэтому "п ο ∂ р α б ο τ κ α" (омикрон, ∂, альфа, тау, каппа)
+# проходило мимо всех правил: normalize_spaced просто вырезал эти символы.
+CONFUSABLES = str.maketrans({
+    "α": "а", "β": "в", "γ": "у", "δ": "б", "ε": "е", "η": "н", "ι": "и",
+    "κ": "к", "λ": "л", "μ": "м", "ο": "о", "π": "п", "ρ": "р", "σ": "о",
+    "ς": "с", "τ": "т", "υ": "у", "φ": "ф", "χ": "х", "ω": "ш",
+    "∂": "д", "ð": "д",
+})
+
+
 def normalize_text(text: str) -> str:
-    text = unicodedata.normalize("NFKC", text or "").casefold()
+    text = unicodedata.normalize("NFKC", text or "").casefold().translate(CONFUSABLES)
     replacements = str.maketrans({"a": "а", "b": "б", "c": "с", "e": "е", "h": "х", "i": "и", "k": "к", "m": "м", "n": "н", "o": "о", "p": "п", "r": "р", "s": "с", "t": "т", "u": "у", "v": "в", "x": "х", "y": "у", "z": "з", "$": "с", "0": "о", "1": "и", "3": "з", "4": "ч", "6": "б"})
     return text.translate(replacements)
 
@@ -341,6 +352,30 @@ def _is_fake_purchase_spam(normalized: str, spaced: str) -> bool:
     if has_small_amount and has_purchase_context and signal_count >= 1: return True
     return False
 
+# Зарплата с цифрой — признак вакансии, а не вопроса клиента: "зп от 100 тыс",
+# "доход от 3000". Проверяется по raw_spaced: normalize_text превращает цифры
+# в буквы ("100" -> "иоо").
+SALARY_RE = re.compile(
+    r"\b(?:зп|з п|зарплат\w*|оклад\w*|доход\w*)\s+(?:от\s+|до\s+)?\d",
+    re.IGNORECASE | re.UNICODE,
+)
+# Ставка за период или "на руки": "100 тыс в месяц", "6к на руки". Сама по
+# себе встречается и у клиента ("трачу 10 тыс в месяц"), поэтому нужен ещё
+# один признак объявления из VACANCY_SIGNALS.
+PAY_RATE_RE = re.compile(
+    r"\b\d+\s*(?:к|k|т|тыс\w*|т р)?\s*(?:руб\w*\s+|р\s+|₽\s*)?(?:в|за)\s+(?:месяц|мес|неделю|день|смену|сутки)\b"
+    r"|\bна\s+руки\s+(?:от\s+)?\d|\b\d+\s*(?:к|k|тыс\w*)\s+на\s+руки\b",
+    re.IGNORECASE | re.UNICODE,
+)
+VACANCY_SIGNALS = ("график", "совмещ", "помощни", "задани", "задач", "удален", "удалён", "без опыта", "обучен", "в лс", "в личку", "пишите", "подробнее", "бизнес")
+
+
+def _is_vacancy_spam(spaced: str, raw: str) -> bool:
+    if SALARY_RE.search(raw):
+        return True
+    return bool(PAY_RATE_RE.search(raw)) and _count_signals(spaced, VACANCY_SIGNALS) >= 1
+
+
 def classify_with_rule(text: str) -> tuple[str | None, str | None]:
     """Вердикт и имя сработавшего правила.
 
@@ -362,6 +397,7 @@ def classify_with_rule(text: str) -> tuple[str | None, str | None]:
     if _count_signals(spaced, JOB_SIGNALS) >= 2: return "job_spam", "job_signals>=2"
     if _is_short_job_message(spaced): return "job_spam", "short_job_message"
     if _weak_job_phrase_with_context(spaced, raw): return "job_spam", "weak_job_phrase+context"
+    if _is_vacancy_spam(spaced, raw): return "job_spam", "vacancy_salary"
     if _is_fake_purchase_spam(normalized, spaced): return "fake_purchase", "fake_purchase"
     if _is_task_request_spam(normalized, spaced): return "paid_task", "task_request"
     if _is_paid_task_spam(normalized, spaced, raw): return "paid_task", "paid_task"
@@ -410,6 +446,11 @@ def text_variants(text: str) -> tuple[str, ...]:
     homoglyph = lowered.translate(str.maketrans({"p": "р"}))
     if homoglyph != lowered:
         variants.append(homoglyph)
+    # Фолбэки ниже работают по casefold, а не по normalize_text, поэтому
+    # греческие двойники им нужно подменить отдельно.
+    confusable = lowered.translate(CONFUSABLES)
+    if confusable != lowered:
+        variants.append(confusable)
     return tuple(variants)
 
 
@@ -425,6 +466,8 @@ WHO_STEMS = (
     "девочк", "девочек", "девочьк", "девчонк", "девч[её]нк", "девчат",
     "девушк", "девушек", "девушьк", "девк", "т[её]лочк",
     "женщин", "парн", "парень", "парней", "мужчин", "мальчик", "ребят", "модел",
+    # "Требуется помощник для малого бизнеса" — та же вакансия, только без пола.
+    "помощни[кц]", "сотрудни[кц]",
 )
 # Дательный, творительный и предложный — это обращение клиента, а не набор:
 # "нужны девочкАМ заколки", "нужны ребятАМ подарки".
