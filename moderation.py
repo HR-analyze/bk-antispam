@@ -107,7 +107,63 @@ CONFUSABLES = str.maketrans({
     "κ": "к", "λ": "л", "μ": "м", "ο": "о", "π": "п", "ρ": "р", "σ": "о",
     "ς": "с", "τ": "т", "υ": "у", "φ": "ф", "χ": "х", "ω": "ш",
     "∂": "д", "ð": "д",
+    # Капительные буквы из блоков IPA и Phonetic Extensions — их выдают
+    # «генераторы шрифтов»: "нᴀ ʙᴇчᴇρ" превращалось в "н ч р". Сопоставление
+    # по виду, а не по звуку: ʙ — это "в", а не "б".
+    "ᴀ": "а", "ʙ": "в", "ᴄ": "с", "ᴅ": "д", "ᴇ": "е", "ʜ": "н", "ᴋ": "к",
+    "ᴍ": "м", "ᴏ": "о", "ᴘ": "р", "ᴛ": "т", "ᴠ": "в", "ᴡ": "ш", "ʏ": "у",
+    "ᴢ": "з", "ᴎ": "и", "ᴙ": "я", "ᴦ": "г", "ᴧ": "л", "ᴨ": "п", "ᴩ": "р",
+    "ᴫ": "л", "ʌ": "л", "ᴈ": "з",
 })
+
+# Блоки, из которых берут двойники кириллицы. Таблица выше всех не покроет —
+# спамер просто сменит генератор. Зато обычный клиент пишет кириллицей и
+# латиницей, а три с лишним символа отсюда рядом с кириллицей — это обход.
+# Латиница с диакритикой ("crème brûlée") и японская каомодзи сюда не входят.
+EXOTIC_LETTER_RANGES = (
+    (0x0250, 0x02AF),  # IPA: ʙ ʜ ʌ
+    (0x0370, 0x03FF),  # греческий
+    (0x0500, 0x052F),  # дополнение кириллицы: ԁ ԛ
+    (0x0530, 0x058F),  # армянский: ո ս
+    (0x13A0, 0x13FF),  # чероки
+    (0x1D00, 0x1DBF),  # фонетические расширения: ᴀ ᴇ ᴋ ᴧ
+    (0x1F00, 0x1FFF),  # греческий расширенный
+    (0x2100, 0x214F),  # буквоподобные символы
+    (0x2202, 0x2202),  # ∂
+    (0x2C80, 0x2CFF),  # коптский
+    (0xA640, 0xA69F),  # кириллица расширенная-B
+    (0xA720, 0xA7FF),  # латиница расширенная-D: капительные
+)
+MIXED_SCRIPT_MIN_EXOTIC = 3
+_CYRILLIC_RE = re.compile(r"[а-яё]", re.IGNORECASE)
+
+
+def _is_exotic(char: str) -> bool:
+    code = ord(char)
+    return any(start <= code <= end for start, end in EXOTIC_LETTER_RANGES)
+
+
+_TOKEN_PUNCT = ".,;:!?…()[]{}\"'«»-—"
+
+
+def is_mixed_script(text: str) -> bool:
+    """Кириллица вперемешку с буквами-двойниками из чужих алфавитов.
+
+    Считаются только слова из одних букв, в которых есть кириллица
+    ("ʙᴇчᴇρ"), и одиночные буквы ("п σ ∂ ρ"). Каомодзи вроде "ʕ•ᴥ•ʔ" или
+    "ᵔᴥᵔ" собраны из тех же блоков IPA, но не являются ни тем, ни другим.
+    """
+    text = unicodedata.normalize("NFKC", text or "")
+    if not _CYRILLIC_RE.search(text):
+        return False
+    exotic = 0
+    for token in text.split():
+        token = token.strip(_TOKEN_PUNCT)
+        if not token or not all(char.isalpha() or char == "∂" for char in token):
+            continue
+        if len(token) == 1 or _CYRILLIC_RE.search(token):
+            exotic += sum(1 for char in token if _is_exotic(char))
+    return exotic >= MIXED_SCRIPT_MIN_EXOTIC
 
 
 def normalize_text(text: str) -> str:
@@ -579,6 +635,9 @@ def decide(
             return reason, rule
     if any(spaced_job_fallback(v) for v in variants):
         return "job_spam", "spaced_job_fallback"
+    # Последним: если содержание распознано, пусть вердикт называет его.
+    if is_mixed_script(text):
+        return "spam", "mixed_script"
     return None, None
 
 
