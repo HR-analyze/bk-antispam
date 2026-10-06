@@ -54,6 +54,14 @@ JOB_SIGNALS = ("подработ", "шабаш", "кандидат", "сотру
 OBFUSCATED_JOB_PATTERNS = (r"\b[wv]абашк\w*\b", r"\bш[аa]б[аa]шк\w*\b", r"\bп[оo]д[рr][аa]б[оo]тк\w*\b", r"\bпод\s*работ\w*\b")
 PAID_TASK_SIGNALS = ("нужен человек", "нужна помощь", "ищу человека", "ищу кто", "нужен кто", "кто сможет", "кто сможет помочь", "кто сможет присмотреть", "присмотреть за", "присмотрит за", "посидеть с", "посидеть за", "помочь с", "нужно сделать", "нужен на", "нужна на", "ищу на завтра", "ищу на сегодня", "на постоянную основу", "на постоянной основе", "за 3 часа", "за 2 часа", "за час", "в день", "в сутки", "плачу", "оплачу", "оплата", "выплата")
 PAID_AMOUNT_RE = re.compile(r"\b\d{2,6}\s*(?:₽|р\.?|руб(?:лей|ля)?\b)", re.IGNORECASE | re.UNICODE)
+# "4к", "3k", "5 тыс", "2 т.р.", "2 косаря" — та же сумма в рублях, только
+# сленгом. Без этого "4000р" удалялось, а "4к" проходило. Проверяется по
+# raw_spaced, поэтому "т.р." приходит как "т р". Одиночная "к" — только слитно
+# с числом: в "буду к 5 к обеду" это предлог.
+PAID_THOUSANDS_RE = re.compile(r"\b\d{1,4}(?:[кk]{1,2}\b|\s*(?:тыс\w*|т\s?р\b|косар\w*))", re.IGNORECASE | re.UNICODE)
+# Голое число засчитывается суммой, только когда оно привязано к услуге:
+# "4000 за помощь". Само по себе это бывает номер заказа.
+REWARD_AMOUNT_RE = re.compile(r"\b\d{3,6}\s+за\s+(?:помощь|работу)\b", re.IGNORECASE | re.UNICODE)
 BARE_AMOUNT_RE = re.compile(r"\b\d{2,6}\b")
 SPACED_DIGITS_RE = re.compile(r"(?<!\d)\d+(?:\s+\d+)+(?!\d)")
 TASK_REQUEST_PHRASES = {"кто поможет с переездом", "кто может помочь с переездом", "кто сможет помочь с переездом", "кто поможет перевезти", "кто может перевезти", "кто сможет перевезти", "кто поможет с погрузкой", "кто может выгулять", "кто сможет выгулять", "кто может присмотреть за", "кто сможет присмотреть за", "ищу человека для переезда", "нужен человек для переезда"}
@@ -325,7 +333,8 @@ def _is_task_request_spam(normalized: str, spaced: str) -> bool:
     return request_count >= 1 and action_count >= 1 and (has_task_target or has_payment)
 
 def _is_paid_task_spam(normalized: str, spaced: str, raw: str) -> bool:
-    has_currency_amount = bool(PAID_AMOUNT_RE.search(raw)); has_spaced_amount = _has_spaced_number(raw)
+    has_currency_amount = bool(PAID_AMOUNT_RE.search(raw) or PAID_THOUSANDS_RE.search(raw)); has_spaced_amount = _has_spaced_number(raw)
+    has_reward = bool(REWARD_AMOUNT_RE.search(raw))
     bare_amounts = [int(value) for value in BARE_AMOUNT_RE.findall(raw) if int(value) >= 100]
     has_bare_amount = bool(bare_amounts) or has_spaced_amount
     task_signal_count = sum(1 for signal in PAID_TASK_SIGNALS if normalize_spaced(signal) in spaced)
@@ -335,7 +344,7 @@ def _is_paid_task_spam(normalized: str, spaced: str, raw: str) -> bool:
     compact = compact_spaced(spaced)
     has_obfuscated_work = bool(re.search(r"подработ\w*|шабаш\w*|ваканс\w*", compact, re.IGNORECASE | re.UNICODE))
     has_duration = bool(re.search(r"\b\d{1,3}\s*(?:час(?:а|ов)?|дн(?:я|ей)?|сут(?:ки|ок)?)\b", raw, re.IGNORECASE | re.UNICODE))
-    if (has_currency_amount or has_spaced_amount or (has_bare_amount and ("плачу" in raw or "оплата" in raw or has_duration))) and (task_signal_count >= 1 or has_obfuscated_work): return True
+    if (has_currency_amount or has_spaced_amount or (has_bare_amount and ("плачу" in raw or "оплата" in raw or has_duration or has_reward))) and (task_signal_count >= 1 or has_obfuscated_work): return True
     if has_people and has_time and has_obfuscated_work and has_bare_amount: return True
     if has_currency_amount and has_people and has_time and has_work_word: return True
     return False
