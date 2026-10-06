@@ -62,6 +62,16 @@ PAID_THOUSANDS_RE = re.compile(r"\b\d{1,4}(?:[кk]{1,2}\b|\s*(?:тыс\w*|т\s?�
 # Голое число засчитывается суммой, только когда оно привязано к услуге:
 # "4000 за помощь". Само по себе это бывает номер заказа.
 REWARD_AMOUNT_RE = re.compile(r"\b\d{3,6}\s+за\s+(?:помощь|работу)\b", re.IGNORECASE | re.UNICODE)
+# "Дам денег", "дам по 6000", "даю 5к" — то же, что "плачу 6000". Только
+# "дам/даю": "оплачу 1500" и "заплачу наличкой" пишет и клиент, а "плачу" и
+# "заплачу" уже ловятся как сигнал платной просьбы. Проверяется по raw_spaced:
+# там цифры остаются цифрами. "Для дам 300 наборов" — это дамы, а не глагол.
+MONEY_OFFER_RE = re.compile(
+    r"(?<!\bдля )(?<!\bот )(?<!\bу )(?<!\bсреди )\b(?:дам|даю)\s+(?:по\s+)?(?:вам\s+|тебе\s+)?"
+    r"(?:\d{1,3}(?:\s\d{3})+\b|\d{3,7}\b|\d{1,4}\s*(?:[кk]{1,2}\b|тыс\w*|т\s?р\b|косар\w*)|денег\b|деньг\w*|бабк\w*|бабл\w*|кэш\w*)",
+    re.IGNORECASE | re.UNICODE,
+)
+DM_CALL_RE = re.compile(r"\b(?:напиш(?:ите|и)|пиш(?:ите|и)|в\s+лс|в\s+личк\w*|в\s+личные)\b", re.IGNORECASE | re.UNICODE)
 BARE_AMOUNT_RE = re.compile(r"\b\d{2,6}\b")
 SPACED_DIGITS_RE = re.compile(r"(?<!\d)\d+(?:\s+\d+)+(?!\d)")
 TASK_REQUEST_PHRASES = {"кто поможет с переездом", "кто может помочь с переездом", "кто сможет помочь с переездом", "кто поможет перевезти", "кто может перевезти", "кто сможет перевезти", "кто поможет с погрузкой", "кто может выгулять", "кто сможет выгулять", "кто может присмотреть за", "кто сможет присмотреть за", "ищу человека для переезда", "нужен человек для переезда"}
@@ -334,7 +344,7 @@ def _is_task_request_spam(normalized: str, spaced: str) -> bool:
 
 def _is_paid_task_spam(normalized: str, spaced: str, raw: str) -> bool:
     has_currency_amount = bool(PAID_AMOUNT_RE.search(raw) or PAID_THOUSANDS_RE.search(raw)); has_spaced_amount = _has_spaced_number(raw)
-    has_reward = bool(REWARD_AMOUNT_RE.search(raw))
+    has_reward = bool(REWARD_AMOUNT_RE.search(raw) or MONEY_OFFER_RE.search(raw))
     bare_amounts = [int(value) for value in BARE_AMOUNT_RE.findall(raw) if int(value) >= 100]
     has_bare_amount = bool(bare_amounts) or has_spaced_amount
     task_signal_count = sum(1 for signal in PAID_TASK_SIGNALS if normalize_spaced(signal) in spaced)
@@ -447,6 +457,17 @@ def _is_vacancy_spam(spaced: str, raw: str) -> bool:
     return has_pay and _count_signals(spaced, VACANCY_SIGNALS) >= 1
 
 
+def _is_money_offer_spam(spaced: str, raw: str) -> bool:
+    """«Дам денег, все в лс», «дам по 6000 за срочность, пишите».
+
+    Деньги без призыва в личку бывают у клиента ("дам 5000 одной купюрой,
+    сдача будет?"), призыв без денег — тоже ("напишите нам в личные
+    сообщения"). Вместе — объявление. Обе формы текста: в raw_spaced цифры
+    целы, в normalize_spaced сняты латинские двойники букв.
+    """
+    return any(MONEY_OFFER_RE.search(form) and DM_CALL_RE.search(form) for form in (raw, spaced))
+
+
 def classify_with_rule(text: str) -> tuple[str | None, str | None]:
     """Вердикт и имя сработавшего правила.
 
@@ -469,6 +490,7 @@ def classify_with_rule(text: str) -> tuple[str | None, str | None]:
     if _is_short_job_message(spaced): return "job_spam", "short_job_message"
     if _weak_job_phrase_with_context(spaced, raw): return "job_spam", "weak_job_phrase+context"
     if _is_vacancy_spam(spaced, raw): return "job_spam", "vacancy_salary"
+    if _is_money_offer_spam(spaced, raw): return "job_spam", "money_offer"
     if _is_fake_purchase_spam(normalized, spaced): return "fake_purchase", "fake_purchase"
     if _is_task_request_spam(normalized, spaced): return "paid_task", "task_request"
     if _is_paid_task_spam(normalized, spaced, raw): return "paid_task", "paid_task"
