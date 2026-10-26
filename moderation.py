@@ -475,6 +475,18 @@ HELP_PAY_RE = re.compile(
     rf"|\b{_PAY_OFFER}\s+(?:\w+\s+){{0,2}}?{_FOR_HELP}\s+(?:\w+\s+){{0,1}}?{_AMOUNT_CUR}",
     re.IGNORECASE | re.UNICODE,
 )
+# "5000 за 3-4 часа", "3к за пару часов", "за 2 часа 4000р". В raw_spaced
+# дефис уже пробел: "3-4" приходит как "3 4". "За 2 часа до праздника" — это
+# срок заказа, а не ставка.
+_HOURS = r"за\s+(?:\d{1,2}(?:\s\d{1,2})?\s*(?:час(?:а|ов)?\b|ч\b)|час\b|пару\s+часов|несколько\s+часов)(?!\s+до\b)"
+HOURLY_PAY_RE = re.compile(
+    rf"\b{_AMOUNT}\s+(?:\w+\s+){{0,1}}?{_HOURS}"
+    rf"|\b{_HOURS}\s+(?:\w+\s+){{0,1}}?{_AMOUNT_CUR}",
+    re.IGNORECASE | re.UNICODE,
+)
+# Крючок объявления: "есть тема", "если интересно". Сумма за часы без него
+# бывает и у клиента ("доставка 500 за 2 часа ожидания?").
+AD_HOOK_RE = re.compile(r"\b(?:есть\s+тема|если\s+интересн\w*|кому\s+интересн\w*)\b", re.IGNORECASE | re.UNICODE)
 # Благодарность — признак клиента: "спасибо за помощь, заплачу 1500 при получении".
 GRATITUDE_RE = re.compile(r"\b(?:спасибо|благодар\w*|спс)\b", re.IGNORECASE | re.UNICODE)
 
@@ -489,6 +501,11 @@ def _is_vacancy_spam(spaced: str, raw: str) -> bool:
 def _is_shift_pay_spam(raw: str) -> bool:
     """Цена за смену — объявление о работе, слов «работа» и «вакансия» не нужно."""
     return bool(SHIFT_PAY_RE.search(raw))
+
+
+def _is_hourly_pay_spam(raw: str) -> bool:
+    """«5000 за 3-4 часа, жду в ЛС» — ставка за часы плюс зазывание."""
+    return bool(HOURLY_PAY_RE.search(raw) and (DM_CALL_RE.search(raw) or AD_HOOK_RE.search(raw)))
 
 
 def _is_help_pay_spam(raw: str) -> bool:
@@ -531,6 +548,7 @@ def classify_with_rule(text: str) -> tuple[str | None, str | None]:
     if _is_vacancy_spam(spaced, raw): return "job_spam", "vacancy_salary"
     if _is_money_offer_spam(spaced, raw): return "job_spam", "money_offer"
     if _is_shift_pay_spam(raw): return "job_spam", "shift_pay"
+    if _is_hourly_pay_spam(raw): return "job_spam", "hourly_pay"
     if _is_help_pay_spam(raw): return "paid_task", "help_pay"
     if _is_fake_purchase_spam(normalized, spaced): return "fake_purchase", "fake_purchase"
     if _is_task_request_spam(normalized, spaced): return "paid_task", "task_request"
@@ -672,6 +690,20 @@ def direct_people_job_fallback(text: str) -> bool:
     return bool(PEOPLE_JOB_RE.search(" ".join((text or "").casefold().split())))
 
 
+# "Молодёжь возьму от 16", "берём ребят с 14 лет". Возраст после "от/с" — либо
+# с "лет", либо в конце фразы: "возьму с 14 числа" и "возьму от 16 штук" — клиент.
+AGE_JOB_RE = re.compile(
+    r"\b(?:возьм(?:у|[её]м)|бер[её]м|беру|принима(?:ю|ем))\s+(?:[\w-]+\s+){0,2}?(?:от|с)\s+1[2-8]"
+    r"(?:\s*(?:лет|год\w*|\+)|(?=\s*(?:[.,!?;)]|$)))",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def direct_age_job_fallback(text: str) -> bool:
+    """Набор подростков по возрасту: «возьму от 16»."""
+    return bool(AGE_JOB_RE.search(" ".join((text or "").casefold().split())))
+
+
 def direct_child_job_fallback(text: str) -> bool:
     """Явные запросы детей/подростков как работников."""
     normalized = " ".join((text or "").casefold().split())
@@ -718,6 +750,8 @@ def decide(
         return "job_spam", "child_fallback"
     if any(direct_people_job_fallback(v) for v in variants):
         return "job_spam", "people_fallback"
+    if any(direct_age_job_fallback(v) for v in variants):
+        return "job_spam", "age_fallback"
     for variant in variants:
         reason, rule = classify_with_rule(variant)
         if reason is not None:
